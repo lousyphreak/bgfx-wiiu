@@ -211,20 +211,23 @@ namespace bgfx
 			// CafeGLSL maps readonly storage blocks to native buffer resources at
 			// the declared binding. They share bgfx's graphics resource slots.
 			RawBindings raw;
-			const std::regex storage(R"(\blayout\s*\(([^)]*)\)\s*readonly\s+buffer\b)");
-			const std::regex binding(R"(\bbinding\s*=\s*([0-9]+))");
-			for (std::sregex_iterator it(_code.begin(), _code.end(), storage), end; it != end; ++it)
+			if (!_compute)
 			{
-				std::smatch match;
-				const std::string layout = (*it)[1].str();
-				if (!std::regex_search(layout, match, binding) || strtoul(match[1].str().c_str(), NULL, 10) >= 16)
+				const std::regex storage(R"(\blayout\s*\(([^)]*)\)\s*readonly\s+buffer\b)");
+				const std::regex binding(R"(\bbinding\s*=\s*([0-9]+))");
+				for (std::sregex_iterator it(_code.begin(), _code.end(), storage), end; it != end; ++it)
 				{
-					bx::write(_messages, &err, "GX2: readonly buffers require an explicit binding in 0..15.\n");
-					return false;
+					std::smatch match;
+					const std::string layout = (*it)[1].str();
+					if (!std::regex_search(layout, match, binding) || strtoul(match[1].str().c_str(), NULL, 10) >= 16)
+					{
+						bx::write(_messages, &err, "GX2: readonly buffers require an explicit binding in 0..15.\n");
+						return false;
+					}
+					raw.srv |= 1u << uint32_t(strtoul(match[1].str().c_str(), NULL, 10));
 				}
-				raw.srv |= 1u << uint32_t(strtoul(match[1].str().c_str(), NULL, 10));
 			}
-			if (_compute)
+			else
 			{
 				for (uint32_t ii = 0; ii < _compute->resourceCount; ++ii)
 				{
