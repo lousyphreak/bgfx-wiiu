@@ -1,6 +1,8 @@
 # Original bgfx applications, sharing one SDL3/GX2 entry implementation.
 find_package(SDL3 REQUIRED CONFIG)
-set(BGFX_WIIU_EXAMPLES "00-helloworld;01-cubes" CACHE STRING "Numbered example directories to build")
+set(BGFX_WIIU_EXAMPLES
+    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update"
+    CACHE STRING "Numbered example directories to build")
 set(common_dir "${BGFX_DIR}/examples/common")
 set(example_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/example-generated")
 
@@ -69,7 +71,13 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         BYPRODUCTS "${package_dir}/code/${example}.rpx"
         VERBATIM)
 
-    file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc" "${example_dir}/cs_*.sc")
+    # GX2 exposes graphics stages only; examples gate optional compute on caps.
+    file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
+    if(example STREQUAL "05-instancing")
+        list(APPEND shader_sources
+            "${BGFX_DIR}/examples/01-cubes/vs_cubes.sc"
+            "${BGFX_DIR}/examples/01-cubes/fs_cubes.sc")
+    endif()
     # Embedded example shaders need the same GX2 symbols as common ImGui.
     set(example_source_text "")
     foreach(source IN LISTS sources)
@@ -80,12 +88,11 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
     set(shader_outputs "")
     foreach(source IN LISTS shader_sources)
         get_filename_component(shader "${source}" NAME_WE)
+        get_filename_component(shader_dir "${source}" DIRECTORY)
         if(shader MATCHES "^vs_")
             set(stage vertex)
-        elseif(shader MATCHES "^fs_")
-            set(stage fragment)
         else()
-            set(stage compute)
+            set(stage fragment)
         endif()
         set(bin2c_options "")
         string(FIND "${example_source_text}" "${shader}.bin.h" embedded_include)
@@ -101,9 +108,9 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_dir}"
             COMMAND "${BGFX_SHADERC}" -f "${source}" -o "${output}"
                 --type ${stage} --platform wiiu -p gx2 ${bin2c_options}
-                --varyingdef "${example_dir}/varying.def.sc"
+                --varyingdef "${shader_dir}/varying.def.sc"
                 -i "${BGFX_DIR}/src;${common_dir}" --depends
-            DEPENDS "${BGFX_SHADERC}" "${source}" "${example_dir}/varying.def.sc"
+            DEPENDS "${BGFX_SHADERC}" "${source}" "${shader_dir}/varying.def.sc"
                 "${BGFX_DIR}/src/bgfx_shader.sh"
             DEPFILE "${output}.d"
             VERBATIM)
@@ -122,7 +129,7 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         endforeach()
     endforeach()
     add_custom_target(example-${example}-content
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${package_dir}/content"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${package_dir}/content/temp"
         DEPENDS ${shader_outputs})
     add_dependencies(example-${example} example-${example}-content)
     install(FILES "${package_dir}/code/${example}.rpx" DESTINATION "${example}/code")
