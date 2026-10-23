@@ -2538,7 +2538,23 @@ namespace bgfx { namespace gx2
 					}
 					if (!found)
 					{
-						// Match bgfx's unbound attribute value without expanding vertex data.
+						// Pinned backends source missing attributes at offset zero of the last stream.
+						if (streamMask)
+						{
+							const uint32_t ss = 31-bx::countLeadingZeros(streamMask);
+							for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
+								if (0 == bx::strCmp(var.name, s_attribName[aa]))
+								{
+									const bool bytes = aa >= Attrib::Color0 && aa <= Attrib::Indices;
+									VertexLayout layout;
+									layout.begin().add(Attrib::Enum(aa), bytes ? 4 : aa >= Attrib::TexCoord0 ? 2 : 3,
+										bytes ? AttribType::Uint8 : AttribType::Float).end();
+									attributes[count] = attribute(var, layout, Attrib::Enum(aa), ss);
+									if (gpuEndianMask & (1u << ss)) attributes[count].endianSwap = GX2_ENDIAN_SWAP_NONE;
+									++count; found = true; break;
+								}
+						}
+						if (found) continue;
 						GX2AttribStream stream = {};
 						stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS+1;
 						stream.format = GX2_ATTRIB_FORMAT_FLOAT_32; stream.type = GX2_ATTRIB_INDEX_PER_VERTEX;
