@@ -1582,6 +1582,11 @@ public static partial class bgfx
 		/// </summary>
 		WebGPU,
 	
+		/// <summary>
+		/// Nintendo Wii U GX2
+		/// </summary>
+		Gx2,
+
 		Count
 	}
 	

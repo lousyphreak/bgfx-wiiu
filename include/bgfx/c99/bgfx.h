@@ -91,6 +91,7 @@ typedef enum bgfx_renderer_type
     BGFX_RENDERER_TYPE_OPENGL,                /** ( 8) OpenGL 4.3+                    */
     BGFX_RENDERER_TYPE_VULKAN,                /** ( 9) Vulkan                         */
     BGFX_RENDERER_TYPE_WEBGPU,                /** (10) WebGPU                         */
+    BGFX_RENDERER_TYPE_GX2,                   /** (11) Nintendo Wii U GX2             */
 
     BGFX_RENDERER_TYPE_COUNT
 

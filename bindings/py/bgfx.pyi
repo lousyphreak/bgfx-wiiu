@@ -50,7 +50,9 @@ class RendererType(enum.IntEnum):
 	Vulkan = 9
 	# WebGPU
 	WebGPU = 10
-	Count = 11
+	# Nintendo Wii U GX2
+	Gx2 = 11
+	Count = 12
 
 # Access mode enum.
 class Access(enum.IntEnum):

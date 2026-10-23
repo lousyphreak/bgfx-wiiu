@@ -17,6 +17,7 @@
 #include "renderer_gnm.cpp"
 #include "renderer_mtl.cpp"
 #include "renderer_noop.cpp"
+#include "renderer_gx2.cpp"
 #include "renderer_nvn.cpp"
 #include "renderer_vk.cpp"
 #include "renderer_webgpu.cpp"

@@ -5956,6 +5956,10 @@ namespace bgfx
 		virtual const char* getRendererName() const = 0;
 		virtual bool isDeviceRemoved() = 0;
 		virtual void flip() = 0;
+#if BGFX_CONFIG_RENDERER_GX2
+		// Called after postcommands; presentation may provide the final submission.
+		virtual void endFrame(bool _willPresent) { BX_UNUSED(_willPresent); }
+#endif // BGFX_CONFIG_RENDERER_GX2
 		virtual void createIndexBuffer(IndexBufferHandle _handle, const Memory* _mem, uint16_t _flags) = 0;
 		virtual void destroyIndexBuffer(IndexBufferHandle _handle) = 0;
 		virtual void createVertexLayout(VertexLayoutHandle _handle, const VertexLayout& _layout) = 0;

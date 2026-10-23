@@ -18,6 +18,7 @@
 #define BGFX_EMBEDDED_SHADER_PSSL(...)
 #define BGFX_EMBEDDED_SHADER_SPIRV(...)
 #define BGFX_EMBEDDED_SHADER_WGSL(...)
+#define BGFX_EMBEDDED_SHADER_GX2(...)
 
 #ifndef BGFX_PLATFORM_SUPPORTS_DXBC
 #	define BGFX_PLATFORM_SUPPORTS_DXBC (0 \
@@ -97,6 +98,10 @@
 		)
 #endif // BGFX_PLATFORM_SUPPORTS_WGSL
 
+#ifndef BGFX_PLATFORM_SUPPORTS_GX2
+#	define BGFX_PLATFORM_SUPPORTS_GX2 BX_PLATFORM_WIIU
+#endif
+
 ///
 #define BGFX_EMBEDDED_SHADER_CONCATENATE(_x, _y) BGFX_EMBEDDED_SHADER_CONCATENATE_(_x, _y)
 #define BGFX_EMBEDDED_SHADER_CONCATENATE_(_x, _y) _x ## _y
@@ -152,6 +157,12 @@
 	{ _renderer, BGFX_EMBEDDED_SHADER_CONCATENATE(_name, _wgsl), BGFX_EMBEDDED_SHADER_COUNTOF(BGFX_EMBEDDED_SHADER_CONCATENATE(_name, _wgsl) ) },
 #endif // BGFX_PLATFORM_SUPPORTS_WGSL
 
+#if BGFX_PLATFORM_SUPPORTS_GX2
+#	undef BGFX_EMBEDDED_SHADER_GX2
+#	define BGFX_EMBEDDED_SHADER_GX2(_renderer, _name) \
+	{ _renderer, BGFX_EMBEDDED_SHADER_CONCATENATE(_name, _gx2), BGFX_EMBEDDED_SHADER_COUNTOF(BGFX_EMBEDDED_SHADER_CONCATENATE(_name, _gx2) ) },
+#endif
+
 #define BGFX_EMBEDDED_SHADER(_name)                                                         \
 	{                                                                                       \
 		#_name,                                                                             \
@@ -165,6 +176,7 @@
 			BGFX_EMBEDDED_SHADER_ESSL (bgfx::RendererType::OpenGLES,   _name)               \
 			BGFX_EMBEDDED_SHADER_GLSL (bgfx::RendererType::OpenGL,     _name)               \
 			BGFX_EMBEDDED_SHADER_SPIRV(bgfx::RendererType::Vulkan,     _name)               \
+			BGFX_EMBEDDED_SHADER_GX2  (bgfx::RendererType::Gx2,        _name)               \
 			BGFX_EMBEDDED_SHADER_WGSL (bgfx::RendererType::WebGPU,     _name)               \
 			{ bgfx::RendererType::Noop, (const uint8_t*)"VSH\x0c\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0", 22 }, \
 			{ bgfx::RendererType::Count,  NULL, 0 }                                         \

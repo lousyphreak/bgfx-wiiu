@@ -30,7 +30,8 @@ class RendererType(enum.IntEnum):
 	OpenGL = 8
 	Vulkan = 9
 	WebGPU = 10
-	Count = 11
+	Gx2 = 11
+	Count = 12
 
 class Access(enum.IntEnum):
 	Read = 0

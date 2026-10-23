@@ -929,6 +929,7 @@ namespace bgfx
 		||  RendererType::OpenGLES   == rendererType
 		||  RendererType::Metal      == rendererType
 		||  RendererType::WebGPU     == rendererType
+		||  RendererType::Gx2        == rendererType
 		   )
 		{
 			VertexLayout layout;
@@ -3494,6 +3495,13 @@ namespace bgfx
 				rendererExecCommands(m_render->m_cmdPost);
 			}
 
+#if BGFX_CONFIG_RENDERER_GX2
+			if (m_rendererInitialized)
+			{
+				m_renderCtx->endFrame(!m_render->m_flush && 0 != (m_render->m_reset & BGFX_RESET_FLIP_AFTER_RENDER));
+			}
+#endif // BGFX_CONFIG_RENDERER_GX2
+
 			m_flipAfterRender = 0 != (m_render->m_reset & BGFX_RESET_FLIP_AFTER_RENDER);
 			m_flushPrevFrame  = m_render->m_flush;
 
@@ -3635,6 +3643,7 @@ namespace bgfx
 	BGFX_RENDERER_CONTEXT(gl);
 	BGFX_RENDERER_CONTEXT(vk);
 	BGFX_RENDERER_CONTEXT(wgpu);
+	BGFX_RENDERER_CONTEXT(gx2);
 
 #undef BGFX_RENDERER_CONTEXT
 
@@ -3665,6 +3674,7 @@ namespace bgfx
 		{ gl::rendererCreate,     gl::rendererDestroy,     BGFX_RENDERER_OPENGL_NAME,     !!BGFX_CONFIG_RENDERER_OPENGL     }, // OpenGL
 		{ vk::rendererCreate,     vk::rendererDestroy,     BGFX_RENDERER_VULKAN_NAME,     !!BGFX_CONFIG_RENDERER_VULKAN     }, // Vulkan
 		{ wgpu::rendererCreate,   wgpu::rendererDestroy,   BGFX_RENDERER_WEBGPU_NAME,     !!BGFX_CONFIG_RENDERER_WEBGPU     }, // WebGPU
+		{ gx2::rendererCreate, gx2::rendererDestroy, "GX2", !!BGFX_CONFIG_RENDERER_GX2 },
 	};
 	BX_PRAGMA_DIAGNOSTIC_POP();
 	static_assert(BX_COUNTOF(s_rendererCreator) == RendererType::Count);
@@ -3808,6 +3818,7 @@ namespace bgfx
 				}
 
 				score += RendererType::Noop != renderer ? 1 : 0;
+				score += BX_PLATFORM_WIIU && RendererType::Gx2 == renderer ? 100 : 0;
 
 				if (BX_ENABLED(BX_PLATFORM_WINDOWS) )
 				{

@@ -5440,6 +5440,10 @@ public final class Bgfx {
 		 * WebGPU
 		 */
 		WEBGPU,
+		/**
+		 * Nintendo Wii U GX2
+		 */
+		GX2,
 
 		/**
 		 * Number of native enum values.

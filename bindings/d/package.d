@@ -718,6 +718,7 @@ enum RendererType: bgfx.impl.RendererType.Enum{
 	openGL = bgfx.impl.RendererType.Enum.openGL,
 	vulkan = bgfx.impl.RendererType.Enum.vulkan,
 	webGPU = bgfx.impl.RendererType.Enum.webGPU,
+	gx2 = bgfx.impl.RendererType.Enum.gx2,
 	count = bgfx.impl.RendererType.Enum.count,
 }
 

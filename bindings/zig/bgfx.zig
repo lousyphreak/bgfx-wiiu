@@ -970,6 +970,9 @@ pub const RendererType = enum(c_int) {
     /// WebGPU
     WebGPU,
 
+    /// Nintendo Wii U GX2
+    Gx2,
+
     Count
 };
 
