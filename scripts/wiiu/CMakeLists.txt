@@ -27,21 +27,35 @@ add_library(bgfx STATIC
 
 set(generated_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(embedded_includes "")
-foreach(shader IN ITEMS vs_debugfont fs_debugfont vs_resolve_depth fs_resolve_depth fs_resolve_depth_array fs_gx2_mip_2d fs_gx2_mip_array fs_gx2_mip_3d vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
+foreach(shader IN ITEMS
+    vs_debugfont fs_debugfont vs_resolve_depth fs_resolve_depth fs_resolve_depth_array
+    fs_gx2_mip_2d fs_gx2_mip_array fs_gx2_mip_3d
+    fs_gx2_copy_depth_2d fs_gx2_copy_depth_array fs_gx2_copy_depth_3d
+    fs_gx2_copy_uint_2d fs_gx2_copy_uint_array fs_gx2_copy_uint_3d
+    fs_gx2_copy_int_2d fs_gx2_copy_int_array fs_gx2_copy_int_3d
+    fs_gx2_resolve_uint_2d fs_gx2_resolve_uint_array
+    fs_gx2_resolve_int_2d fs_gx2_resolve_int_array
+    vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
     if(shader MATCHES "^vs_")
         set(stage vertex)
     else()
         set(stage fragment)
     endif()
+    set(raw_options "")
+    set(depfile_options DEPFILE ${generated_dir}/${shader}.gx2.bin.h.d)
+    if(shader MATCHES "^fs_gx2_(copy|resolve)_")
+        set(raw_options --raw)
+        set(depfile_options "")
+    endif()
     set(output ${generated_dir}/${shader}.gx2.bin.h)
     add_custom_command(OUTPUT ${output}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${generated_dir}
         COMMAND ${BGFX_SHADERC} -f ${BGFX_DIR}/src/${shader}.sc -o ${output}
-            --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
+            ${raw_options} --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
             --varyingdef ${BGFX_DIR}/src/varying.def.sc -i ${BGFX_DIR}/src --depends
         DEPENDS ${BGFX_SHADERC} ${BGFX_DIR}/src/${shader}.sc
             ${BGFX_DIR}/src/varying.def.sc ${BGFX_DIR}/src/bgfx_shader.sh
-        DEPFILE ${output}.d
+        ${depfile_options}
         VERBATIM)
     target_sources(bgfx PRIVATE ${output})
     string(APPEND embedded_includes "#include \"${shader}.gx2.bin.h\"\n")

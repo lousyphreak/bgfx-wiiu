@@ -521,6 +521,19 @@ namespace bgfx
 		BGFX_EMBEDDED_SHADER(fs_gx2_mip_2d),
 		BGFX_EMBEDDED_SHADER(fs_gx2_mip_array),
 		BGFX_EMBEDDED_SHADER(fs_gx2_mip_3d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_depth_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_depth_array),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_depth_3d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_uint_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_uint_array),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_uint_3d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_int_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_int_array),
+		BGFX_EMBEDDED_SHADER(fs_gx2_copy_int_3d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_resolve_uint_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_resolve_uint_array),
+		BGFX_EMBEDDED_SHADER(fs_gx2_resolve_int_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_resolve_int_array),
 #endif
 
 #if BGFX_CONFIG_MIP_GEN_FALLBACK
@@ -1027,7 +1040,25 @@ namespace bgfx
 #if BGFX_CONFIG_RENDERER_GX2
 		if (RendererType::Gx2 == rendererType)
 		{
-			static const char* fragments[] = {"fs_gx2_mip_2d", "fs_gx2_mip_array", "fs_gx2_mip_3d"};
+			static const char* fragments[] =
+			{
+				"fs_gx2_mip_2d",
+				"fs_gx2_mip_array",
+				"fs_gx2_mip_3d",
+				"fs_gx2_copy_depth_2d",
+				"fs_gx2_copy_depth_array",
+				"fs_gx2_copy_depth_3d",
+				"fs_gx2_copy_uint_2d",
+				"fs_gx2_copy_uint_array",
+				"fs_gx2_copy_uint_3d",
+				"fs_gx2_copy_int_2d",
+				"fs_gx2_copy_int_array",
+				"fs_gx2_copy_int_3d",
+				"fs_gx2_resolve_uint_2d",
+				"fs_gx2_resolve_uint_array",
+				"fs_gx2_resolve_int_2d",
+				"fs_gx2_resolve_int_array",
+			};
 			for (uint32_t ii = 0; ii < BX_COUNTOF(fragments); ++ii)
 			{
 				ShaderHandle vsh = createEmbeddedShader(s_embeddedShaders, rendererType, "vs_resolve_depth");
@@ -1053,7 +1084,7 @@ namespace bgfx
 				"cs_mipgen_oddxy",
 			};
 
-			for (uint32_t ii = 0; ii < BX_COUNTOF(m_program); ++ii)
+			for (uint32_t ii = 0; ii < BX_COUNTOF(cs_mipgen); ++ii)
 			{
 				ShaderHandle csh = createEmbeddedShader(s_embeddedShaders, g_caps.rendererType, cs_mipgen[ii]);
 				BX_ASSERT(isValid(csh), "Failed to create mip generate embedded compute shader \"%s\"", cs_mipgen[ii]);

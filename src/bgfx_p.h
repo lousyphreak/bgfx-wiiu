@@ -1023,7 +1023,11 @@ namespace bgfx
 				);
 		}
 
+#if BGFX_CONFIG_RENDERER_GX2
+		ProgramHandle m_program[16];
+#else
 		ProgramHandle m_program[4];
+#endif // BGFX_CONFIG_RENDERER_GX2
 		UniformHandle u_mipGen;
 		UniformHandle s_texMipSrc;
 	};
