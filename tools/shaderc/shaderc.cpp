@@ -2409,6 +2409,10 @@ namespace bgfx
 						if (profile->lang == ShadingLang::Gx2)
 						{
 							code = "#version 430\n";
+							if (_options.shaderType == 'v')
+							{
+								code += "#extension GL_ARB_shader_viewport_layer_array : require\n";
+							}
 							if (_options.shaderType == 'f')
 							{
 								if (!bx::findIdentifierMatch(input, "gl_FragColor").isEmpty())

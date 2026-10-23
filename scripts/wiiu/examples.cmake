@@ -1,7 +1,7 @@
 # Original bgfx applications, sharing one SDL3/GX2 entry implementation.
 find_package(SDL3 REQUIRED CONFIG)
 set(BGFX_WIIU_EXAMPLES
-    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky;38-bloom;40-svt;42-bunnylod;43-denoise;44-sss;45-bokeh;47-pixelformats;49-hextile;50-headless;51-gpufont"
+    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky;38-bloom;40-svt;42-bunnylod;43-denoise;44-sss;45-bokeh;47-pixelformats;49-hextile;50-headless;51-gpufont;52-layered"
     CACHE STRING "Numbered example directories to build")
 if("25-c99" IN_LIST BGFX_WIIU_EXAMPLES OR "42-bunnylod" IN_LIST BGFX_WIIU_EXAMPLES)
     enable_language(C)
