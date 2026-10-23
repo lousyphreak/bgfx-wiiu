@@ -568,6 +568,11 @@ void clearViewMask(uint32_t _viewMask, uint8_t _flags, const ClearValues& _clear
 	s_clearMask |= _viewMask;
 }
 
+#if BX_PLATFORM_WIIU
+using bx::Aabb;
+using bx::Obb;
+using bx::Sphere;
+#else
 struct Aabb
 {
 	float m_min[3];
@@ -584,6 +589,7 @@ struct Sphere
 	float m_center[3];
 	float m_radius;
 };
+#endif // BX_PLATFORM_WIIU
 
 struct Primitive
 {
@@ -657,24 +663,40 @@ struct Mesh
 		bx::Error err;
 
 		uint32_t chunk;
+#if BX_PLATFORM_WIIU
+		while (4 == bx::readHE(reader, chunk, true, &err) )
+#else
 		while (4 == bx::read(reader, chunk, &err) )
+#endif // BX_PLATFORM_WIIU
 		{
 			switch (chunk)
 			{
 			case BGFX_CHUNK_MAGIC_VB:
 				{
+#if BX_PLATFORM_WIIU
+					meshio::readMeshBounds(reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
+#else
 					bx::read(reader, group.m_sphere, &err);
 					bx::read(reader, group.m_aabb, &err);
 					bx::read(reader, group.m_obb, &err);
+#endif // BX_PLATFORM_WIIU
 
 					bgfx::read(reader, m_layout, &err);
 					uint16_t stride = m_layout.getStride();
 
 					uint16_t numVertices;
+#if BX_PLATFORM_WIIU
+					bx::readHE(reader, numVertices, true, &err);
+					const bgfx::Memory* mem = bgfx::alloc(numVertices*stride);
+					bx::read(reader, mem->data, mem->size, &err);
+
+					meshio::meshVerticesToHostEndian(mem->data, numVertices, m_layout);
+#else
 					bx::read(reader, numVertices, &err);
 					const bgfx::Memory* mem = bgfx::alloc(numVertices*stride);
 					bx::read(reader, mem->data, mem->size, &err);
 
+#endif // BX_PLATFORM_WIIU
 					group.m_vbh = bgfx::createVertexBuffer(mem, m_layout);
 				}
 				break;
@@ -682,9 +704,16 @@ struct Mesh
 			case BGFX_CHUNK_MAGIC_IB:
 				{
 					uint32_t numIndices;
+#if BX_PLATFORM_WIIU
+					bx::readHE(reader, numIndices, true, &err);
+					const bgfx::Memory* mem = bgfx::alloc(numIndices*2);
+					bx::read(reader, mem->data, mem->size, &err);
+					meshio::indicesToHostEndian((uint16_t*)mem->data, numIndices);
+#else
 					bx::read(reader, numIndices, &err);
 					const bgfx::Memory* mem = bgfx::alloc(numIndices*2);
 					bx::read(reader, mem->data, mem->size, &err);
+#endif // BX_PLATFORM_WIIU
 					group.m_ibh = bgfx::createIndexBuffer(mem);
 				}
 				break;
@@ -692,24 +721,43 @@ struct Mesh
 			case BGFX_CHUNK_MAGIC_PRI:
 				{
 					uint16_t len;
+#if BX_PLATFORM_WIIU
+					bx::readHE(reader, len, true, &err);
+#else
 					bx::read(reader, len, &err);
+#endif // BX_PLATFORM_WIIU
 
 					std::string material;
 					material.resize(len);
 					bx::read(reader, const_cast<char*>(material.c_str() ), len, &err);
 
 					uint16_t num;
+#if BX_PLATFORM_WIIU
+					bx::readHE(reader, num, true, &err);
+
+					for (uint32_t ii = 0; ii < num; ++ii)
+					{
+						bx::readHE(reader, len, true, &err);
+#else
 					bx::read(reader, num, &err);
 
 					for (uint32_t ii = 0; ii < num; ++ii)
 					{
 						bx::read(reader, len, &err);
+#endif // BX_PLATFORM_WIIU
 
 						std::string name;
 						name.resize(len);
 						bx::read(reader, const_cast<char*>(name.c_str() ), len, &err);
 
 						Primitive prim;
+#if BX_PLATFORM_WIIU
+						bx::readHE(reader, prim.m_startIndex, true, &err);
+						bx::readHE(reader, prim.m_numIndices, true, &err);
+						bx::readHE(reader, prim.m_startVertex, true, &err);
+						bx::readHE(reader, prim.m_numVertices, true, &err);
+						meshio::readMeshBounds(reader, prim.m_sphere, prim.m_aabb, prim.m_obb, &err);
+#else
 						bx::read(reader, prim.m_startIndex, &err);
 						bx::read(reader, prim.m_numIndices, &err);
 						bx::read(reader, prim.m_startVertex, &err);
@@ -717,6 +765,7 @@ struct Mesh
 						bx::read(reader, prim.m_sphere, &err);
 						bx::read(reader, prim.m_aabb, &err);
 						bx::read(reader, prim.m_obb, &err);
+#endif // BX_PLATFORM_WIIU
 
 						group.m_prims.push_back(prim);
 					}

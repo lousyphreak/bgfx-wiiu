@@ -9,6 +9,9 @@
 #include <bx/bounds.h>
 #include <bx/pixelformat.h>
 #include <bx/filepath.h>
+#if BX_PLATFORM_WIIU
+#include <bx/readerwriter.h>
+#endif // BX_PLATFORM_WIIU
 #include <bgfx/bgfx.h>
 #include <bimg/bimg.h>
 
@@ -182,6 +185,16 @@ struct Group
 };
 typedef stl::vector<Group> GroupArray;
 
+#if BX_PLATFORM_WIIU
+// Canonical little-endian mesh payloads use native scalars after loading.
+namespace meshio
+{
+	void readMeshBounds(bx::ReaderI* _reader, bx::Sphere& _sphere, bx::Aabb& _aabb, bx::Obb& _obb, bx::Error* _err);
+	void meshVerticesToHostEndian(void* _data, uint32_t _numVertices, const bgfx::VertexLayout& _layout);
+	void indicesToHostEndian(uint16_t* _indices, uint32_t _numIndices);
+}
+
+#endif // BX_PLATFORM_WIIU
 struct Mesh
 {
 	void load(bx::ReaderSeekerI* _reader, bool _ramcopy);

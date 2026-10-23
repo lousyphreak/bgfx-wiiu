@@ -435,7 +435,7 @@ namespace bgfx
 }
 
 #if BX_PLATFORM_WIIU
-namespace
+namespace meshio
 {
 	void readMeshBounds(bx::ReaderI* _reader, bx::Sphere& _sphere, bx::Aabb& _aabb, bx::Obb& _obb, bx::Error* _err)
 	{
@@ -507,6 +507,11 @@ namespace
 		BX_UNUSED(_data, _numVertices, _layout);
 #endif // BX_CPU_ENDIAN_BIG
 	}
+	void indicesToHostEndian(uint16_t* _indices, uint32_t _numIndices)
+	{
+		for (uint32_t ii = 0; ii < _numIndices; ++ii)
+			_indices[ii] = bx::toLittleEndian(_indices[ii]);
+	}
 } // namespace
 
 #endif // BX_PLATFORM_WIIU
@@ -539,7 +544,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 			case kChunkVertexBuffer:
 			{
 #if BX_PLATFORM_WIIU
-				readMeshBounds(_reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
+				meshio::readMeshBounds(_reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
 #else
 				read(_reader, group.m_sphere, &err);
 				read(_reader, group.m_aabb, &err);
@@ -554,7 +559,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 				bx::readHE(_reader, group.m_numVertices, true, &err);
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numVertices*stride);
 				read(_reader, mem->data, mem->size, &err);
-				meshVerticesToHostEndian(mem->data, group.m_numVertices, m_layout);
+				meshio::meshVerticesToHostEndian(mem->data, group.m_numVertices, m_layout);
 #else
 				read(_reader, group.m_numVertices, &err);
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numVertices*stride);
@@ -574,7 +579,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 			case kChunkVertexBufferCompressed:
 			{
 #if BX_PLATFORM_WIIU
-				readMeshBounds(_reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
+				meshio::readMeshBounds(_reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
 #else
 				read(_reader, group.m_sphere, &err);
 				read(_reader, group.m_aabb, &err);
@@ -606,7 +611,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 #if BX_PLATFORM_WIIU
 				// Vertex decoding restores the original little-endian bytes.
 				meshopt_decodeVertexBuffer(mem->data, group.m_numVertices, stride, (uint8_t*)compressedVertices, compressedSize);
-				meshVerticesToHostEndian(mem->data, group.m_numVertices, m_layout);
+				meshio::meshVerticesToHostEndian(mem->data, group.m_numVertices, m_layout);
 #else
 				meshopt_decodeVertexBuffer(mem->data, group.m_numVertices, stride, (uint8_t*)compressedVertices, compressedSize);
 #endif // BX_PLATFORM_WIIU
@@ -630,11 +635,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numIndices*2);
 				read(_reader, mem->data, mem->size, &err);
-				uint16_t* indices = (uint16_t*)mem->data;
-				for (uint32_t ii = 0; ii < group.m_numIndices; ++ii)
-				{
-					indices[ii] = bx::toLittleEndian(indices[ii]);
-				}
+				meshio::indicesToHostEndian((uint16_t*)mem->data, group.m_numIndices);
 #else
 				read(_reader, group.m_numIndices, &err);
 
@@ -728,7 +729,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 					bx::readHE(_reader, prim.m_numIndices, true, &err);
 					bx::readHE(_reader, prim.m_startVertex, true, &err);
 					bx::readHE(_reader, prim.m_numVertices, true, &err);
-					readMeshBounds(_reader, prim.m_sphere, prim.m_aabb, prim.m_obb, &err);
+					meshio::readMeshBounds(_reader, prim.m_sphere, prim.m_aabb, prim.m_obb, &err);
 #else
 					read(_reader, prim.m_startIndex, &err);
 					read(_reader, prim.m_numIndices, &err);
