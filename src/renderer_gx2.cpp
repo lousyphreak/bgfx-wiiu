@@ -36,6 +36,32 @@ namespace bgfx { namespace gx2
 		}
 	}
 
+	static void copyTextureRow(void* _dst, const void* _src, uint32_t _bytes, uint8_t _swapWordSize)
+	{
+		uint8_t* dst = (uint8_t*)_dst;
+		const uint8_t* src = (const uint8_t*)_src;
+		switch (_swapWordSize)
+		{
+		case 2:
+			for (uint32_t ii = 0; ii < _bytes; ii += 2)
+				bx::storeUnaligned(dst+ii, bx::endianSwap(bx::loadUnaligned<uint16_t>(src+ii)));
+			break;
+		case 3:
+			for (uint32_t ii = 0; ii < _bytes; ii += 3)
+			{
+				dst[ii] = src[ii+2]; dst[ii+1] = src[ii+1]; dst[ii+2] = src[ii];
+			}
+			break;
+		case 4:
+			for (uint32_t ii = 0; ii < _bytes; ii += 4)
+				bx::storeUnaligned(dst+ii, bx::endianSwap(bx::loadUnaligned<uint32_t>(src+ii)));
+			break;
+		default:
+			bx::memCopy(dst, src, _bytes);
+			break;
+		}
+	}
+
 	static const char* s_attribName[] =
 	{
 		"a_position",
@@ -864,18 +890,66 @@ namespace bgfx { namespace gx2
 			return stage;
 		}
 
-		void stageTexture(Texture& _texture, uint32_t _mip, uint32_t _slice, const Rect& _rect, const void* _data, uint32_t _pitch)
+		void stageTexture(Texture& _texture, uint32_t _mip, uint32_t _slice, const Rect& _rect, const void* _data, uint32_t _pitch, bool _littleEndian = BX_CPU_ENDIAN_LITTLE)
 		{
 			TextureLevel& level = _texture.levels[_mip];
 			TextureStage& stage = textureStage(_texture, _mip, _slice);
+			const bimg::TextureFormat::Enum requested = bimg::TextureFormat::Enum(_texture.requestedFormat);
 			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(_texture.format));
-			const uint32_t rowBytes = ((_rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
-			const uint32_t rows = (_rect.m_height+info.blockHeight-1)/info.blockHeight;
+			const bimg::ImageBlockInfo& sourceInfo = bimg::getBlockInfo(requested);
+			const uint32_t blocksX = bx::max<uint32_t>(sourceInfo.minBlockX, (_rect.m_width+sourceInfo.blockWidth-1)/sourceInfo.blockWidth);
+			const uint32_t rows = bx::max<uint32_t>(sourceInfo.minBlockY, (_rect.m_height+sourceInfo.blockHeight-1)/sourceInfo.blockHeight);
+			const uint32_t rowBytes = blocksX*sourceInfo.blockSize;
 			const uint32_t pitch = _pitch == UINT32_MAX ? rowBytes : _pitch;
 			const uint32_t offset = (_rect.m_y/info.blockHeight*level.source.pitch+_rect.m_x/info.blockWidth)*info.blockSize;
-			for (uint32_t yy = 0; yy < rows; ++yy)
-				bx::memCopy((uint8_t*)stage.block->data+offset+yy*level.source.pitch*info.blockSize, (const uint8_t*)_data+yy*pitch, rowBytes);
-			Rect merged = _rect;
+			uint8_t* dst = (uint8_t*)stage.block->data+offset;
+			const uint32_t dstPitch = level.source.pitch*info.blockSize;
+			const uint8_t wordSize = bimg::getPixelWordSize(requested);
+			Rect rect = _rect;
+			if (_texture.format == _texture.requestedFormat)
+			{
+				// GX2 consumes little-endian words; byte channels and encoded blocks copy verbatim.
+				for (uint32_t yy = 0; yy < rows; ++yy)
+					copyTextureRow(dst+yy*dstPitch, (const uint8_t*)_data+yy*pitch, rowBytes, _littleEndian ? 0 : wordSize);
+			}
+			else
+			{
+				// Compressed updates may include a complete edge block beyond the logical mip.
+				rect.m_width = uint16_t(bx::min<uint32_t>(rect.m_width, level.source.width-rect.m_x));
+				rect.m_height = uint16_t(bx::min<uint32_t>(rect.m_height, level.source.height-rect.m_y));
+				const bool compressed = bimg::isCompressed(requested);
+				const bool swap = wordSize > 1 && _littleEndian != bool(BX_CPU_ENDIAN_LITTLE);
+				const uint8_t* src = (const uint8_t*)_data;
+				uint8_t* packed = NULL;
+				uint32_t srcPitch = pitch;
+				// Block decoders require tight rows; CPU scalar conversion requires native words.
+				if (swap || (compressed && pitch != rowBytes))
+				{
+					packed = (uint8_t*)bx::alloc(g_allocator, rowBytes*rows);
+					for (uint32_t yy = 0; yy < rows; ++yy)
+						copyTextureRow(packed+yy*rowBytes, src+yy*pitch, rowBytes, swap ? wordSize : 0);
+					src = packed; srcPitch = rowBytes;
+				}
+				if (compressed)
+				{
+					const uint32_t width = blocksX*sourceInfo.blockWidth;
+					const uint32_t height = rows*sourceInfo.blockHeight;
+					// Small mips and edge blocks decode whole blocks, then crop to the changed rectangle.
+					if (width != rect.m_width || height != rect.m_height)
+					{
+						uint8_t* decoded = (uint8_t*)bx::alloc(g_allocator, width*height*4);
+						bimg::imageDecodeToBgra8(g_allocator, decoded, src, width, height, width*4, requested);
+						bx::memCopy(dst, dstPitch, decoded, width*4, rect.m_width*4, rect.m_height);
+						bx::free(g_allocator, decoded);
+					}
+					else
+						bimg::imageDecodeToBgra8(g_allocator, dst, src, width, height, dstPitch, requested);
+				}
+				else
+					bimg::imageConvert(dst, 32, bimg::getPack(bimg::TextureFormat::BGRA8), src, sourceInfo.bitsPerPixel, bimg::getUnpack(requested), rect.m_width, rect.m_height, 1, srcPitch, dstPitch);
+				bx::free(g_allocator, packed);
+			}
+			Rect merged = rect;
 			for (size_t ii = 0; ii < stage.dirty.size();)
 			{
 				const Rect& old = stage.dirty[ii];
@@ -1012,7 +1086,8 @@ namespace bgfx { namespace gx2
 			bimg::ImageContainer image;
 			if (!bimg::imageParse(image, _mem->data, _mem->size)) return NULL;
 			Texture& texture = m_textures[_handle.idx];
-			texture.flags = _flags; texture.format = TextureFormat::Enum(image.m_format);
+			texture.flags = _flags; texture.requestedFormat = TextureFormat::Enum(image.m_format);
+			texture.format = bimg::isDepth(image.m_format) ? texture.requestedFormat : getViableTextureFormat(image);
 			if (texture.format == TextureFormat::D24F && !(_flags & BGFX_TEXTURE_RT_WRITE_ONLY)) { unsupported("sampled D24F encoding"); return NULL; }
 			GX2Surface& surface = texture.texture.surface;
 			surface = {};
@@ -1086,18 +1161,22 @@ namespace bgfx { namespace gx2
 				uint32_t bytes, alignment; GX2CalcDepthBufferHiZInfo(&buffer, &bytes, &alignment);
 				if (bytes) { texture.hiZ = allocate(bytes, alignment); DCInvalidateRange(texture.hiZ->data, bytes); }
 			}
-			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
+			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.requestedFormat));
+			const bool littleEndian = image.m_offset == UINT32_MAX ? bool(BX_CPU_ENDIAN_LITTLE)
+				: !image.m_ktx || bx::toLittleEndian(bx::loadUnaligned<uint32_t>(_mem->data+12)) == 0x04030201;
 			for (uint32_t mip = 0; mip < surface.mipLevels; ++mip)
 			{
 				const Rect rect = {0, 0, uint16_t(bx::max(1u, surface.width >> mip)), uint16_t(bx::max(1u, surface.height >> mip))};
-				const uint32_t rowBytes = ((rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
-				const uint32_t sliceBytes = rowBytes*((rect.m_height+info.blockHeight-1)/info.blockHeight);
 				for (uint32_t slice = 0; slice < texture.levels[mip].slices.size(); ++slice)
 				{
 					bimg::ImageMip raw;
 					const bool volume = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D;
 					if (bimg::imageGetRawData(image, volume ? 0 : slice, mip+_skip, _mem->data, _mem->size, raw))
-						stageTexture(texture, mip, slice, rect, raw.m_data+(volume ? slice*sliceBytes : 0), rowBytes);
+					{
+						const uint32_t rowBytes = raw.m_width/info.blockWidth*info.blockSize;
+						const uint32_t sliceBytes = rowBytes*(raw.m_height/info.blockHeight);
+						stageTexture(texture, mip, slice, rect, raw.m_data+(volume ? slice*sliceBytes : 0), rowBytes, littleEndian);
+					}
 				}
 			}
 			return NULL;
@@ -1106,10 +1185,10 @@ namespace bgfx { namespace gx2
 		void updateTexture(TextureHandle _handle, uint8_t _side, uint8_t _mip, const Rect& _rect, uint16_t _z, uint16_t _depth, uint16_t _pitch, const Memory* _mem) override
 		{
 			Texture& texture = m_textures[_handle.idx];
-			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
-			const uint32_t rowBytes = ((_rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
+			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.requestedFormat));
+			const uint32_t rowBytes = bx::max<uint32_t>(info.minBlockX, (_rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
 			const uint32_t pitch = _pitch == UINT16_MAX ? rowBytes : _pitch;
-			const uint32_t sliceBytes = pitch*((_rect.m_height+info.blockHeight-1)/info.blockHeight);
+			const uint32_t sliceBytes = pitch*bx::max<uint32_t>(info.minBlockY, (_rect.m_height+info.blockHeight-1)/info.blockHeight);
 			for (uint32_t slice = 0; slice < _depth; ++slice)
 				stageTexture(texture, _mip, (texture.texture.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE ? _z*6+_side : _z)+slice, _rect, _mem->data+slice*sliceBytes, pitch);
 		}

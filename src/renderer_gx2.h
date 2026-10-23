@@ -160,6 +160,7 @@ namespace bgfx { namespace gx2
 		std::vector<TextureLevel> levels;
 		uint64_t flags = 0;
 		TextureFormat::Enum format = TextureFormat::Unknown;
+		TextureFormat::Enum requestedFormat = TextureFormat::Unknown;
 		uint32_t mipOffset = 0;
 		bool pending = false;
 		float depthClear = 1.0f;
