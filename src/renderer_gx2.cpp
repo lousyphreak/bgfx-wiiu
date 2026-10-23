@@ -7,6 +7,9 @@
 #if BGFX_CONFIG_RENDERER_GX2
 #include "renderer.h"
 #include "renderer_gx2.h"
+#include "cs_gx2_indirect.gx2.bin.h"
+#include "cs_gx2_indirect_indexed.gx2.bin.h"
+#include "cs_gx2_indirect_dispatch.gx2.bin.h"
 
 namespace bgfx { namespace gx2
 {
@@ -230,7 +233,7 @@ namespace bgfx { namespace gx2
 				GX2SetupContextStateEx(m_headlessContext, TRUE);
 				m_context = m_headlessContext;
 			}
-			g_caps.supported = BGFX_CAPS_COMPUTE | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
+			g_caps.supported = BGFX_CAPS_COMPUTE | BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -851,9 +854,11 @@ namespace bgfx { namespace gx2
 		}
 
 		void createShader(ShaderHandle _handle, const Memory* _mem) override
+		{ loadShader(m_shaders[_handle.idx], _mem->data); }
+
+		void loadShader(Shader& shader, const uint8_t* _data, bool _internal = false)
 		{
-			Shader& shader = m_shaders[_handle.idx];
-			const uint8_t* ptr = _mem->data;
+			const uint8_t* ptr = _data;
 			const uint32_t magic = readLE(ptr, 4);
 			shader.fragment = isShaderType(magic, 'F');
 			shader.compute = isShaderType(magic, 'C');
@@ -885,7 +890,7 @@ namespace bgfx { namespace gx2
 					binding.m_type = uint8_t(predefined) | (shader.fragment ? kUniformFragmentBit : 0);
 					shader.predefined.push_back(binding);
 				}
-				else
+				else if (!_internal)
 				{
 					const UniformRegInfo* info = m_uniformReg.find(name);
 					BGFX_FATAL(NULL != info, Fatal::InvalidShader, "GX2 uniform %s is not registered.", name);
@@ -2659,10 +2664,10 @@ namespace bgfx { namespace gx2
 			}
 		}
 
-		void readonlyBuffer(const Binding& _bind, uint32_t _unit)
+		void readonlyBuffer(const Binding& _bind, uint32_t _unit, const Shader* _computeShader = NULL)
 		{
 			if ((_bind.m_type != Binding::VertexBuffer && _bind.m_type != Binding::IndexBuffer)
-			|| (!m_boundProgram->compute && _bind.m_access != Access::Read)) { unsupported("writable or non-buffer raw bindings"); return; }
+			|| (!_computeShader && !m_boundProgram->compute && _bind.m_access != Access::Read)) { unsupported("writable or non-buffer raw bindings"); return; }
 			const bool index = _bind.m_type == Binding::IndexBuffer;
 			Buffer& buffer = index ? m_indexBuffers[_bind.m_idx] : m_vertexBuffers[_bind.m_idx];
 			const uint32_t offset = bx::min(_bind.m_offset, buffer.size);
@@ -2677,12 +2682,14 @@ namespace bgfx { namespace gx2
 				(4u << 8) | (13u << 20) | (1u << 26) | (endian << 30),
 				1u, 0, 0, UINT32_C(0xc0000000),
 			};
-			if ((m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex)->rawSrvMask & (1u << _unit))
+			const Shader* vertex = _computeShader ? _computeShader : m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex;
+			const Shader* fragment = _computeShader ? NULL : m_boundProgram->fragment;
+			if (vertex->rawSrvMask & (1u << _unit))
 			{
 				commands[1] = 0x460u+7*_unit;
 				GX2CopyDisplayList(commands, sizeof(commands));
 			}
-			if (m_boundProgram->fragment && (m_boundProgram->fragment->rawSrvMask & (1u << _unit)))
+			if (fragment && (fragment->rawSrvMask & (1u << _unit)))
 			{
 				commands[1] = 7*_unit;
 				GX2CopyDisplayList(commands, sizeof(commands));
@@ -3242,9 +3249,110 @@ namespace bgfx { namespace gx2
 			if (texture.image) touch(texture.image);
 		}
 
-		void dispatchCompute(Program& _program, const RenderCompute& _compute, const RenderBind& _bind, Block* _exports, const float _palette[][4], ViewState& _viewState, const Frame* _frame, uint16_t _view, const View& _renderView)
+		uint32_t indirectRecords(IndirectBufferHandle _handle, uint32_t _start, uint32_t _num)
 		{
-			if (isValid(_compute.m_indirectBuffer)) { unsupported("native indirect compute dispatch"); return; }
+			return bx::min(_num, m_vertexBuffers[_handle.idx].size/BGFX_CONFIG_DRAW_INDIRECT_STRIDE-_start);
+		}
+
+		uint32_t indirectChunk(bool _indexed)
+		{
+			// Native IB size is twenty bits in DWORDs, padded to four DWORDs.
+			return (UINT32_C(0xffffc)*4)/(_indexed ? 96 : 80);
+		}
+
+		void bindComputeExports(Block* _exports)
+		{
+			if (_exports && (m_boundExportData != _exports->data || m_boundExportSize != _exports->size))
+			{
+				GX2SetShaderExportBuffer(_exports->data, _exports->size);
+				m_boundExportData = _exports->data; m_boundExportSize = _exports->size;
+			}
+		}
+
+		Block* lowerIndirect(uint32_t _mode, IndirectBufferHandle _args, IndexBufferHandle _count,
+			uint32_t _params[3][4], uint32_t _bytes, Block* _exports)
+		{
+			static const uint8_t* const data[] = {cs_gx2_indirect_gx2, cs_gx2_indirect_indexed_gx2, cs_gx2_indirect_dispatch_gx2};
+			Shader& shader = m_indirectShaders[_mode];
+			if (!shader.header) loadShader(shader, data[_mode], true);
+			Block* commands = gpuBufferAllocate(_bytes);
+			DCInvalidateRange(commands->data, commands->size); // GPU-only; never CPU-write the payload.
+			_params[2][0] = OSEffectiveToPhysical(uint32_t(uintptr_t(commands->data)));
+			GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
+			GX2SetComputeShader((const GX2ComputeShader*)shader.header->data);
+			Binding args;
+			args.setBuffer(VertexBufferHandle{_args.idx}, Access::Read);
+			readonlyBuffer(args, 0, &shader);
+			if (_mode != 2)
+			{
+				// The compiler hoists this read even when count suppression is disabled.
+				Binding count = args;
+				if (isValid(_count)) count.setIndexBuffer(_count, Access::Read);
+				readonlyBuffer(count, 1, &shader);
+			}
+			Block* layout = allocate(512, 256);
+			bx::memSet(layout->data, 0, 512);
+			((uint32_t*)layout->data)[2*8+1] = bx::toLittleEndian(_bytes/4);
+			GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), layout->data, 512);
+			GX2SetComputeUniformBlock(15, 512, layout->data); retire(layout);
+			const GX2ComputeShader* native = (const GX2ComputeShader*)shader.header->data;
+			const GX2UniformVar* var = GX2GetComputeUniformVar(native, "u_indirectLower");
+			Block* uniform = allocate(shader.uniformSize, 256);
+			bx::memSet(uniform->data, 0, shader.uniformSize);
+			uint32_t* dst = (uint32_t*)uniform->data+var->offset;
+			for (uint32_t ii = 0; ii < 12; ++ii) dst[ii] = bx::toLittleEndian((&_params[0][0])[ii]);
+			GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), uniform->data, shader.uniformSize);
+			GX2SetComputeUniformBlock(0, shader.uniformSize, uniform->data); retire(uniform);
+			Block* params = allocate(sizeof(GX2DispatchParams), GX2_DISPATCH_PARAMS_ALIGNMENT);
+			GX2DispatchParams* dispatch = (GX2DispatchParams*)params->data;
+			dispatch->groupCountX = (_params[0][1]+63)/64;
+			dispatch->groupCountY = dispatch->groupCountZ = 1; dispatch->padding = 0;
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU, params->data, sizeof(*dispatch));
+			GX2DispatchCompute(dispatch); retire(params);
+			touch(shader.header); touch(shader.program);
+			GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, _exports->data, _bytes);
+			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _exports->data, _bytes); // Actual copy source reader.
+			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+			gpuCopyBytes(_exports, 0, commands, 0, _bytes);
+			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, commands->data, commands->size);
+			if (_mode == 2) GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, commands->data, 16); // RID147.
+			return commands;
+		}
+
+		void callIndirect(Block* _commands, uint32_t _offset, uint32_t _bytes)
+		{
+			// Mesa r600_emit_pfp_sync_me: ME publication precedes PFP IB fetch.
+			// Isolate the marker from GPU payload copies and their CPU cache lines.
+			Block* ready = allocate(64);
+			*(uint32_t*)ready->data = 0;
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU, ready->data, 4);
+			const uint32_t marker = OSEffectiveToPhysical(uint32_t(uintptr_t(ready->data)));
+			alignas(64) const uint32_t sync[] = {
+				UINT32_C(0xc0033d00), marker, UINT32_C(0x00040000), 1, 0,
+				UINT32_C(0xc0053c00), UINT32_C(0x00000115), marker, 0, 1, UINT32_MAX, 4,
+			};
+			GX2CopyDisplayList(sync, sizeof(sync));
+			GX2CallDisplayList((const uint8_t*)_commands->data+_offset, _bytes);
+			retire(ready);
+		}
+
+		void dispatchCompute(Program& _program, const RenderCompute& _compute, const RenderBind& _bind, Block* _exports, const float _palette[][4], ViewState& _viewState, const Frame* _frame, uint16_t _view, const View& _renderView, Block* _commands = NULL)
+		{
+			if (isValid(_compute.m_indirectBuffer) && !_commands)
+			{
+				const GX2ComputeShader* native = (const GX2ComputeShader*)_program.compute->header->data;
+				const uint32_t waves = (native->workGroupSizeX*native->workGroupSizeY*native->workGroupSizeZ+63)/64;
+				const uint32_t num = indirectRecords(_compute.m_indirectBuffer, _compute.m_startIndirect, _compute.m_numIndirect);
+				for (uint32_t ii = 0; ii < num; ++ii)
+				{
+					uint32_t params[3][4] = {{_compute.m_startIndirect+ii, 1, 0, 0}, {}, {0, waves, 0, 0}};
+					Block* commands = lowerIndirect(2, _compute.m_indirectBuffer, BGFX_INVALID_HANDLE, params, 144, _exports);
+					// Preserve normal seed/publish/materialize dependencies for each record.
+					dispatchCompute(_program, _compute, _bind, _exports, _palette, _viewState, _frame, _view, _renderView, commands);
+					retire(commands);
+				}
+				return;
+			}
 			Shader& shader = *_program.compute;
 			std::vector<ComputeOutput> outputs;
 			computeLayout(shader, _bind, outputs);
@@ -3329,15 +3437,19 @@ namespace bgfx { namespace gx2
 				GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), uniform->data, shader.uniformSize);
 				GX2SetComputeUniformBlock(0, shader.uniformSize, uniform->data); retire(uniform);
 			}
-			Block* params = allocate(sizeof(GX2DispatchParams), GX2_DISPATCH_PARAMS_ALIGNMENT);
-			GX2DispatchParams* dispatch = (GX2DispatchParams*)params->data;
-			// The native command always launches 64 lanes per physical group. The
-			// compiler folds adjacent waves into independent logical groups and
-			// recovers the original X count from RID147 using this same factor.
-			const uint32_t waves = (native->workGroupSizeX*native->workGroupSizeY*native->workGroupSizeZ+63)/64;
-			dispatch->groupCountX = _compute.m_numX*waves; dispatch->groupCountY = _compute.m_numY; dispatch->groupCountZ = _compute.m_numZ; dispatch->padding = 0;
-			GX2Invalidate(GX2_INVALIDATE_MODE_CPU, params->data, sizeof(*dispatch));
-			GX2DispatchCompute(dispatch); retire(params);
+			if (_commands) callIndirect(_commands, 64, 80);
+			else
+			{
+				Block* params = allocate(sizeof(GX2DispatchParams), GX2_DISPATCH_PARAMS_ALIGNMENT);
+				GX2DispatchParams* dispatch = (GX2DispatchParams*)params->data;
+				// The native command always launches 64 lanes per physical group. The
+				// compiler folds adjacent waves into independent logical groups and
+				// recovers the original X count from RID147 using this same factor.
+				const uint32_t waves = (native->workGroupSizeX*native->workGroupSizeY*native->workGroupSizeZ+63)/64;
+				dispatch->groupCountX = _compute.m_numX*waves; dispatch->groupCountY = _compute.m_numY; dispatch->groupCountZ = _compute.m_numZ; dispatch->padding = 0;
+				GX2Invalidate(GX2_INVALIDATE_MODE_CPU, params->data, sizeof(*dispatch));
+				GX2DispatchCompute(dispatch); retire(params);
+			}
 			touch(shader.header); touch(shader.program);
 			// Export publication belongs to this producer, before any copy, sampled
 			// alias or attribute reader. The stable region may be reused afterward.
@@ -3407,10 +3519,21 @@ namespace bgfx { namespace gx2
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 			{
 				SortKey key;
-				if (!key.decode(_render->m_sortKeys[item], _render->m_viewRemap)) continue;
-				const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
-				std::vector<ComputeOutput> outputs;
-				exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
+				if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
+				{
+					const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
+					std::vector<ComputeOutput> outputs;
+					exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
+					if (isValid(compute.m_indirectBuffer)) exportBytes = bx::max(exportBytes, 144u);
+				}
+				else
+				{
+					const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
+					if (!isValid(draw.m_indirectBuffer)) continue;
+					const bool indexed = isValid(draw.m_indexBuffer);
+					const uint32_t num = indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect);
+					exportBytes = bx::max(exportBytes, bx::min(num, indirectChunk(indexed))*(indexed ? 96u : 80u));
+				}
 			}
 			Block* exports = exportBytes ? gpuBufferAllocate(exportBytes) : NULL;
 			if (exports) DCInvalidateRange(exports->data, exports->size);
@@ -3453,11 +3576,7 @@ namespace bgfx { namespace gx2
 						rendererUpdateUniforms(this, _render->m_uniformBuffer[dispatch.m_uniformIdx], dispatch.m_uniformBegin, dispatch.m_uniformEnd);
 					if (_render->m_debug & BGFX_DEBUG_IFH) continue;
 					endBatch(); finishRenderPass();
-					if (exports && (m_boundExportData != exports->data || m_boundExportSize != exports->size))
-					{
-						GX2SetShaderExportBuffer(exports->data, exports->size);
-						m_boundExportData = exports->data; m_boundExportSize = exports->size;
-					}
+					bindComputeExports(exports);
 					dispatchCompute(m_programs[key.m_program.idx], dispatch, _render->m_renderBind[dispatch.m_bindIdx], exports, _render->m_colorPalette, viewState, _render, view, renderView);
 					++stats.numCompute;
 					restore(); bindFrameBuffer(m_currentFrameBuffer); viewport(renderView); beginBatch();
@@ -3471,12 +3590,42 @@ namespace bgfx { namespace gx2
 				const bool hasOcclusionQuery = 0 != (draw.m_stateFlags & BGFX_STATE_INTERNAL_OCCLUSION_QUERY);
 				if (isValid(draw.m_occlusionQuery) && !hasOcclusionQuery
 				&& !isVisible(_render, draw.m_occlusionQuery, 0 != (draw.m_submitFlags & BGFX_SUBMIT_INTERNAL_OCCLUSION_VISIBLE))) continue;
-				if (isValid(draw.m_indirectBuffer)) { unsupported("indirect drawing"); continue; }
 				if (_render->m_debug & BGFX_DEBUG_IFH) continue;
 				Rect scissor = renderView.m_clippedRect;
 				if (!renderView.m_scissor.isZero()) scissor.intersect(renderView.m_scissor);
 				if (draw.m_scissor != UINT16_MAX) scissor.intersect(_render->m_frameCache.m_rectCache.m_cache[draw.m_scissor]);
 				if (scissor.isZero()) continue;
+				std::vector<Block*> indirect;
+				const bool indexed = isValid(draw.m_indexBuffer);
+				const uint32_t indirectNum = isValid(draw.m_indirectBuffer) ? indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect) : 0;
+				const uint32_t indirectStride = indexed ? 96 : 80;
+				const uint32_t topology = (draw.m_stateFlags & BGFX_STATE_PT_MASK) >> BGFX_STATE_PT_SHIFT;
+				const GX2PrimitiveMode primitive = s_primitive[topology];
+				if (isValid(draw.m_indirectBuffer))
+				{
+					if (!indirectNum) continue;
+					endBatch(); finishRenderPass(); bindComputeExports(exports);
+					for (uint32_t first = 0; first < indirectNum; first += indirectChunk(indexed))
+					{
+						const uint32_t num = bx::min(indirectNum-first, indirectChunk(indexed));
+						uint32_t params[3][4] = {
+							{draw.m_startIndirect+first, num, isValid(draw.m_numIndirectBuffer) ? 1u : 0u, isValid(draw.m_numIndirectBuffer) ? draw.m_numIndirectIndex : 0u},
+							{0, 0, uint32_t(primitive), 0}, {0, 0, first, 0},
+						};
+						if (indexed)
+						{
+							Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
+							const uint32_t size = buffer.flags & BGFX_BUFFER_INDEX32 ? 4 : 2;
+							params[1][0] = OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data)));
+							params[1][1] = size;
+							params[1][3] = size == 4 ? (buffer.littleEndian ? GX2_INDEX_TYPE_U32_LE : GX2_INDEX_TYPE_U32)
+								: (buffer.littleEndian ? GX2_INDEX_TYPE_U16_LE : GX2_INDEX_TYPE_U16);
+							touch(buffer.block);
+						}
+						indirect.push_back(lowerIndirect(indexed ? 1 : 0, draw.m_indirectBuffer, draw.m_numIndirectBuffer, params, num*indirectStride, exports));
+					}
+					restore(); bindFrameBuffer(m_currentFrameBuffer); viewport(renderView); beginBatch();
+				}
 				Program& program = m_programs[key.m_program.idx];
 				if (prepareTextures(_render->m_renderBind[draw.m_bindIdx], program)) viewport(renderView);
 				GX2SetScissor(scissor.m_x, scissor.m_y, scissor.m_width, scissor.m_height);
@@ -3505,11 +3654,23 @@ namespace bgfx { namespace gx2
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
 				vertexInput(program, draw);
-				const uint32_t topology = (draw.m_stateFlags & BGFX_STATE_PT_MASK) >> BGFX_STATE_PT_SHIFT;
-				const GX2PrimitiveMode primitive = s_primitive[topology];
-				uint32_t count;
+				uint32_t count = 0;
 				Block* occlusion = hasOcclusionQuery ? beginOcclusion(draw.m_occlusionQuery) : NULL;
-				if (isValid(draw.m_indexBuffer))
+				if (!indirect.empty())
+				{
+					// Generated IBs must be called from the command buffer, not inside
+					// the ordinary batch IB (GX2 permits only one nested list level).
+					endBatch();
+					uint32_t remaining = indirectNum;
+					for (Block*& commands : indirect)
+					{
+						const uint32_t num = bx::min(remaining, indirectChunk(indexed));
+						callIndirect(commands, 0, num*indirectStride); retire(commands);
+						remaining -= num;
+					}
+					beginBatch();
+				}
+				else if (indexed)
 				{
 					Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
 					const uint32_t indexSize = buffer.flags & BGFX_BUFFER_INDEX32 ? 4 : 2;
@@ -3620,6 +3781,7 @@ namespace bgfx { namespace gx2
 		Buffer m_vertexBuffers[BGFX_CONFIG_MAX_VERTEX_BUFFERS];
 		VertexLayout m_layouts[BGFX_CONFIG_MAX_VERTEX_LAYOUTS];
 		Shader m_shaders[BGFX_CONFIG_MAX_SHADERS];
+		Shader m_indirectShaders[3]; // Non-indexed, indexed, dispatch command lowering.
 		Program m_programs[BGFX_CONFIG_MAX_PROGRAMS];
 		const MipGen* m_mipGen = NULL;
 		Texture m_textures[BGFX_CONFIG_MAX_TEXTURES];
