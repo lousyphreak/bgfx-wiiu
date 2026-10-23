@@ -175,7 +175,7 @@ namespace bgfx { namespace gx2
 			}
 		}
 
-		Block* acquire(std::vector<Block*>& _pool, uint32_t _size)
+		Block* acquire(std::vector<Block*>& _pool, uint32_t _size, bool _displayList = false)
 		{
 			const OSTime completed = GX2GetRetiredTimeStamp();
 			for (Block* block : _pool)
@@ -184,15 +184,18 @@ namespace bgfx { namespace gx2
 			{
 				GX2Flush(); seal();
 				Block* oldest = *std::min_element(_pool.begin(), _pool.end(), [](Block* a, Block* b) { return a->stamp < b->stamp; });
-				GX2WaitTimeStamp(oldest->stamp);
+				// A timed-out wait is not permission to overwrite GPU-owned bytes.
+				while (!GX2WaitTimeStamp(oldest->stamp)) {}
 				return oldest;
 			}
 			Block* block = allocate(_size, 256);
+			// List payloads are only written through write-gather, including on reuse.
+			if (_displayList) DCFlushRange(block->data, block->size);
 			_pool.push_back(block);
 			return block;
 		}
 
-		Block* reuse(std::vector<Block*>& _spare, uint32_t _size, uint32_t _alignment = 64)
+		Block* reuse(std::vector<Block*>& _spare, uint32_t _size, uint32_t _alignment = 64, bool _gpuDestination = false)
 		{
 			const OSTime completed = GX2GetRetiredTimeStamp();
 			for (auto it = _spare.begin(); it != _spare.end(); ++it)
@@ -202,7 +205,10 @@ namespace bgfx { namespace gx2
 					_spare.erase(it);
 					return block;
 				}
-			return allocate(_size, _alignment);
+			Block* block = allocate(_size, _alignment);
+			// GPU-only destinations never acquire CPU cache lines after allocation.
+			if (_gpuDestination) DCInvalidateRange(block->data, block->size);
+			return block;
 		}
 
 		void update(Buffer& _buffer, uint32_t _offset, uint32_t _size, const void* _data, bool _vertex, bool _discard = false)
@@ -361,19 +367,18 @@ namespace bgfx { namespace gx2
 			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL;
 		}
 
-		void textureUpload(Texture& _texture)
+		void textureUpload(Texture& _texture, uint32_t _offset, uint32_t _size)
 		{
 			// Rename busy readers and destinations. Retain the CPU staging image as the
 			// sole preservation source for subsequent partial updates.
 			if (!_texture.image || _texture.image->stamp > GX2GetRetiredTimeStamp())
 			{
 				if (_texture.image) _texture.spareImages.push_back(_texture.image);
-				_texture.image = reuse(_texture.spareImages, _texture.texture.surface.imageSize, _texture.texture.surface.alignment);
+				_texture.image = reuse(_texture.spareImages, _texture.texture.surface.imageSize, _texture.texture.surface.alignment, true);
 			}
 			_texture.texture.surface.image = _texture.image->data;
 			_texture.source.image = _texture.staging->data;
-			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, _texture.source.image, _texture.source.imageSize);
-			DCInvalidateRange(_texture.image->data, _texture.image->size);
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t*)_texture.source.image+_offset, _size);
 			GX2CopySurface(&_texture.source, 0, 0, &_texture.texture.surface, 0, 0);
 			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _texture.image->data, _texture.image->size);
 			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _texture.image->data, _texture.image->size);
@@ -421,7 +426,7 @@ namespace bgfx { namespace gx2
 				for (uint32_t yy = 0; yy < image.m_height; ++yy)
 					bx::memCopy((uint8_t*)texture.staging->data + yy*texture.source.pitch*texture.bytesPerPixel,
 						mip.m_data + yy*image.m_width*texture.bytesPerPixel, image.m_width*texture.bytesPerPixel);
-			textureUpload(texture);
+			textureUpload(texture, 0, texture.source.imageSize);
 			return NULL;
 		}
 
@@ -429,7 +434,8 @@ namespace bgfx { namespace gx2
 		{
 			if (_side || _mip || _z || _depth != 1) { unsupported("texture update layer/mip"); return; }
 			Texture& texture = m_textures[_handle.idx];
-			if (texture.staging->stamp > GX2GetRetiredTimeStamp())
+			const bool renamed = texture.staging->stamp > GX2GetRetiredTimeStamp();
+			if (renamed)
 			{
 				Block* replacement = reuse(texture.spareStaging, texture.source.imageSize, texture.source.alignment);
 				bx::memCopy(replacement->data, texture.staging->data, texture.source.imageSize);
@@ -440,7 +446,10 @@ namespace bgfx { namespace gx2
 			for (uint32_t yy = 0; yy < _rect.m_height; ++yy)
 				bx::memCopy((uint8_t*)texture.staging->data + ((_rect.m_y+yy)*texture.source.pitch+_rect.m_x)*texture.bytesPerPixel,
 					_mem->data+yy*pitch, rowBytes);
-			textureUpload(texture);
+			const uint32_t rowPitch = texture.source.pitch*texture.bytesPerPixel;
+			const uint32_t offset = _rect.m_y*rowPitch+_rect.m_x*texture.bytesPerPixel;
+			const uint32_t bytes = (_rect.m_height-1)*rowPitch+rowBytes;
+			textureUpload(texture, renamed ? 0 : offset, renamed ? texture.source.imageSize : bytes);
 		}
 
 		void destroyTexture(TextureHandle _handle) override
@@ -484,13 +493,11 @@ namespace bgfx { namespace gx2
 
 		void beginBatch()
 		{
-			m_list = acquire(m_lists, 256*1024);
+			m_list = acquire(m_lists, 256*1024, true);
 			m_upload = acquire(m_uploads, 256*1024);
 			touch(m_list); touch(m_upload);
 			m_uploadUsed = 0;
 			m_batchDraws = 0;
-			// Write-gather owns list bytes after this pre-recording cache preparation.
-			DCFlushRange(m_list->data, m_list->size);
 			GX2BeginDisplayListEx(m_list->data, m_list->size, TRUE);
 		}
 
@@ -570,7 +577,10 @@ namespace bgfx { namespace gx2
 			};
 			uint32_t format = formats[type][num-1];
 			if (type == AttribType::Int8 || type == AttribType::Int16 || type == AttribType::Int32) format |= GX2_ATTRIB_FLAG_SIGNED;
-			if (asInt) format |= GX2_ATTRIB_FLAG_INTEGER;
+			BX_UNUSED(asInt); // CPU packing convention; shader reflection determines delivery.
+			const bool integer = _var.type == GX2_SHADER_VAR_TYPE_INT || _var.type == GX2_SHADER_VAR_TYPE_UINT
+				|| (_var.type >= GX2_SHADER_VAR_TYPE_INT2 && _var.type <= GX2_SHADER_VAR_TYPE_UINT4);
+			if (integer) format |= GX2_ATTRIB_FLAG_INTEGER;
 			else if (!normalized || type == AttribType::Float || type == AttribType::Half) format |= GX2_ATTRIB_FLAG_SCALED;
 			GX2AttribStream stream = {};
 			stream.location = _var.location; stream.buffer = _stream; stream.offset = _layout.m_offset[_attr];
@@ -684,8 +694,8 @@ namespace bgfx { namespace gx2
 				GX2SetStencilMask(uint8_t(front >> 8), 0xff, uint8_t(front), uint8_t(back >> 8), 0xff, uint8_t(back));
 				const bool ccw = 0 != (_state & BGFX_STATE_FRONT_CCW);
 				GX2SetCullOnlyControl(ccw ? GX2_FRONT_FACE_CCW : GX2_FRONT_FACE_CW,
-					0 != (_state & (ccw ? BGFX_STATE_CULL_CCW : BGFX_STATE_CULL_CW)),
-					0 != (_state & (ccw ? BGFX_STATE_CULL_CW : BGFX_STATE_CULL_CCW)));
+					0 != (_state & BGFX_STATE_CULL_CW),
+					0 != (_state & BGFX_STATE_CULL_CCW));
 				const uint32_t blend = uint32_t((_state & BGFX_STATE_BLEND_MASK) >> BGFX_STATE_BLEND_SHIFT);
 				GX2SetColorControl(GX2_LOGIC_OP_COPY, blend ? 1 : 0, FALSE, TRUE);
 				GX2SetBlendControl(GX2_RENDER_TARGET_0, s_blend[blend & 15], s_blend[(blend >> 4) & 15],
@@ -770,7 +780,7 @@ namespace bgfx { namespace gx2
 		void viewport(const View& _view)
 		{
 			const Rect& rect = _view.m_rect;
-			GX2SetViewport(rect.m_x, rect.m_y, rect.m_width, rect.m_height, _view.m_minDepth, _view.m_maxDepth);
+			GX2SetViewport(rect.m_x, rect.m_y, rect.m_width, rect.m_height, 2*_view.m_minDepth-_view.m_maxDepth, _view.m_maxDepth);
 		}
 
 		void clear(const View& _view, const ClearQuad& _quad, const float _palette[][4])
@@ -792,6 +802,9 @@ namespace bgfx { namespace gx2
 				viewport(_view);
 				return;
 			}
+			// Clear depth is independent of the view's depth range.
+			const Rect& viewportRect = _view.m_rect;
+			GX2SetViewport(viewportRect.m_x, viewportRect.m_y, viewportRect.m_width, viewportRect.m_height, -1, 1);
 			// Scissoring a native clear is not a partial clear. Draw the shared quad.
 			GX2SetScissor(rect.m_x, rect.m_y, rect.m_width, rect.m_height);
 			Program& program = m_programs[_quad.m_program[0].idx];
@@ -809,6 +822,7 @@ namespace bgfx { namespace gx2
 				| (clear.m_flags & BGFX_CLEAR_DEPTH ? BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_ALWAYS : 0),
 				clear.m_flags & BGFX_CLEAR_STENCIL ? stencil : 0, 0);
 			GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, 0, 1);
+			viewport(_view);
 		}
 
 		void submit(Frame* _render, const ClearQuad& _clearQuad, const MipGen&, TextVideoMemBlitter& _blitter) override
@@ -907,7 +921,7 @@ namespace bgfx { namespace gx2
 		{
 			if (isValid(_handle)) unsupported("debug text in offscreen framebuffers");
 			beginBatch();
-			GX2SetViewport(0, 0, m_target.color->surface.width, m_target.color->surface.height, 0, 1);
+			GX2SetViewport(0, 0, m_target.color->surface.width, m_target.color->surface.height, -1, 1);
 			GX2SetScissor(0, 0, m_target.color->surface.width, m_target.color->surface.height);
 			state(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A, 0, 0);
 		}

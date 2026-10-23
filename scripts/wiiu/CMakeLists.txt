@@ -4,6 +4,7 @@ project(bgfx_wiiu LANGUAGES CXX)
 get_filename_component(BGFX_DIR "../.." ABSOLUTE)
 set(BX_DIR "${BGFX_DIR}/../bx-wiiu" CACHE PATH "bx source directory")
 set(BIMG_DIR "${BGFX_DIR}/../bimg-wiiu" CACHE PATH "bimg source directory")
+set(BGFX_SHADERC "${BGFX_DIR}/../../bin/shaderc" CACHE FILEPATH "Host shaderc with CafeGLSL/GX2 support")
 add_subdirectory(${BIMG_DIR}/scripts/wiiu ${CMAKE_CURRENT_BINARY_DIR}/bimg)
 
 add_library(bgfx STATIC
@@ -21,8 +22,32 @@ add_library(bgfx STATIC
     ${BGFX_DIR}/src/renderer_nvn.cpp
     ${BGFX_DIR}/src/renderer_vk.cpp
     ${BGFX_DIR}/src/renderer_webgpu.cpp
+    ${BGFX_DIR}/src/renderer_gx2.cpp
 )
-target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include PRIVATE ${BGFX_DIR}/3rdparty)
+
+set(generated_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(embedded_includes "")
+foreach(shader IN ITEMS vs_debugfont fs_debugfont vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
+    if(shader MATCHES "^vs_")
+        set(stage vertex)
+    else()
+        set(stage fragment)
+    endif()
+    set(output ${generated_dir}/${shader}.gx2.bin.h)
+    add_custom_command(OUTPUT ${output}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${generated_dir}
+        COMMAND ${BGFX_SHADERC} -f ${BGFX_DIR}/src/${shader}.sc -o ${output}
+            --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
+            --varyingdef ${BGFX_DIR}/src/varying.def.sc -i ${BGFX_DIR}/src --depends
+        DEPENDS ${BGFX_SHADERC} ${BGFX_DIR}/src/${shader}.sc
+            ${BGFX_DIR}/src/varying.def.sc ${BGFX_DIR}/src/bgfx_shader.sh
+        DEPFILE ${output}.d
+        VERBATIM)
+    target_sources(bgfx PRIVATE ${output})
+    string(APPEND embedded_includes "#include \"${shader}.gx2.bin.h\"\n")
+endforeach()
+file(GENERATE OUTPUT ${generated_dir}/gx2_embedded.bin.h CONTENT "${embedded_includes}")
+target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include PRIVATE ${BGFX_DIR}/3rdparty ${generated_dir})
 target_compile_options(bgfx PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_MULTITHREADED=0
     PRIVATE BGFX_CONFIG_VIDEO=0 BGFX_CONFIG_MIP_GEN_FALLBACK=0 BGFX_CONFIG_BLIT_FALLBACK=0)

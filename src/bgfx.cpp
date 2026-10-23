@@ -478,6 +478,9 @@ namespace bgfx
 #include "vs_resolve_depth.bin.h"
 #include "fs_resolve_depth.bin.h"
 #include "fs_resolve_depth_array.bin.h"
+#if BGFX_CONFIG_RENDERER_GX2
+#include "gx2_embedded.bin.h"
+#endif
 
 #if BGFX_CONFIG_MIP_GEN_FALLBACK
 #	include "cs_mipgen_pow2.bin.h"
@@ -511,9 +514,11 @@ namespace bgfx
 		BGFX_EMBEDDED_SHADER(fs_clear5),
 		BGFX_EMBEDDED_SHADER(fs_clear6),
 		BGFX_EMBEDDED_SHADER(fs_clear7),
+#if !BGFX_CONFIG_RENDERER_GX2
 		BGFX_EMBEDDED_SHADER(vs_resolve_depth),
 		BGFX_EMBEDDED_SHADER(fs_resolve_depth),
 		BGFX_EMBEDDED_SHADER(fs_resolve_depth_array),
+#endif
 
 #if BGFX_CONFIG_MIP_GEN_FALLBACK
 		BGFX_EMBEDDED_SHADER(cs_mipgen_pow2),
