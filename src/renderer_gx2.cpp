@@ -2492,11 +2492,12 @@ namespace bgfx { namespace gx2
 			const bool invalid = m_cachedState == UINT64_MAX;
 			if (_state != m_cachedState || _stencil != m_cachedStencil || _wireframe != m_wireframe || ((_state & BGFX_STATE_BLEND_INDEPENDENT) && _rgba != m_cachedRgba))
 			{
-				const uint32_t front = uint32_t(_stencil);
-				const uint32_t back = uint32_t(_stencil >> 32) ? uint32_t(_stencil >> 32) : front;
+				const uint32_t front = unpackStencil(0, _stencil);
+				const bool separate = stencilFrontAndBack(_stencil);
+				const uint32_t back = separate ? unpackStencil(1, _stencil) : front;
 				GX2SetDepthStencilControl(m_hasDepth && 0 != (_state & BGFX_STATE_DEPTH_TEST_MASK), m_hasDepth && !m_depthReadOnly && 0 != (_state & BGFX_STATE_WRITE_Z),
 					s_compare[(_state & BGFX_STATE_DEPTH_TEST_MASK) >> BGFX_STATE_DEPTH_TEST_SHIFT],
-					m_hasDepth && 0 != ((front | back) & BGFX_STENCIL_TEST_MASK), front != back,
+					m_hasDepth && stencilEnabled(_stencil), separate,
 					s_compare[(front & BGFX_STENCIL_TEST_MASK) >> BGFX_STENCIL_TEST_SHIFT],
 					s_stencil[(front & BGFX_STENCIL_OP_PASS_Z_MASK) >> BGFX_STENCIL_OP_PASS_Z_SHIFT],
 					s_stencil[(front & BGFX_STENCIL_OP_FAIL_Z_MASK) >> BGFX_STENCIL_OP_FAIL_Z_SHIFT],
@@ -2505,7 +2506,9 @@ namespace bgfx { namespace gx2
 					s_stencil[(back & BGFX_STENCIL_OP_PASS_Z_MASK) >> BGFX_STENCIL_OP_PASS_Z_SHIFT],
 					s_stencil[(back & BGFX_STENCIL_OP_FAIL_Z_MASK) >> BGFX_STENCIL_OP_FAIL_Z_SHIFT],
 					s_stencil[(back & BGFX_STENCIL_OP_FAIL_S_MASK) >> BGFX_STENCIL_OP_FAIL_S_SHIFT]);
-				GX2SetStencilMask(uint8_t(front >> 8), m_stencilReadOnly ? 0 : 0xff, uint8_t(front), uint8_t(back >> 8), m_stencilReadOnly ? 0 : 0xff, uint8_t(back));
+				const uint8_t readMask = uint8_t(front >> BGFX_STENCIL_FUNC_RMASK_SHIFT);
+				const uint8_t writeMask = m_stencilReadOnly ? 0 : unpackStencilWriteMask(_stencil);
+				GX2SetStencilMask(readMask, writeMask, uint8_t(front), readMask, writeMask, uint8_t(back));
 				const bool ccw = 0 != (_state & BGFX_STATE_FRONT_CCW);
 				const bool bias = m_depthControl.m_constant != 0 || m_depthControl.m_slopeScale != 0;
 				GX2SetPolygonControl(ccw ? GX2_FRONT_FACE_CCW : GX2_FRONT_FACE_CW,
@@ -3064,10 +3067,12 @@ namespace bgfx { namespace gx2
 				const uint32_t exports = ((const GX2PixelShader*)program.fragment->header->data)->regs.cb_shader_mask;
 				for (uint32_t target = 0; target < m_numColors; ++target)
 					if ((exports >> (target*4)) & colorMask) m_colorWritten |= 1u << target;
-				const uint32_t front = uint32_t(draw.m_stencil), back = draw.m_stencil >> 32 ? uint32_t(draw.m_stencil >> 32) : front;
+				const uint32_t front = unpackStencil(0, draw.m_stencil);
+				const uint32_t back = stencilFrontAndBack(draw.m_stencil) ? unpackStencil(1, draw.m_stencil) : front;
 				const uint32_t ops = BGFX_STENCIL_OP_FAIL_S_MASK | BGFX_STENCIL_OP_FAIL_Z_MASK | BGFX_STENCIL_OP_PASS_Z_MASK;
 				const uint32_t keep = BGFX_STENCIL_OP_FAIL_S_KEEP | BGFX_STENCIL_OP_FAIL_Z_KEEP | BGFX_STENCIL_OP_PASS_Z_KEEP;
-				const bool stencilWrite = ((front | back) & BGFX_STENCIL_TEST_MASK) && ((front & ops) != keep || (back & ops) != keep);
+				const bool stencilWrite = stencilEnabled(draw.m_stencil) && unpackStencilWriteMask(draw.m_stencil)
+					&& ((front & ops) != keep || (back & ops) != keep);
 				m_depthWritten |= m_hasDepth && ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && stencilWrite));
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
