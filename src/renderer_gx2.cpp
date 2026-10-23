@@ -2650,7 +2650,7 @@ namespace bgfx { namespace gx2
 			// update() and gpuBufferWritten() publish once at the producer boundary.
 			const uint32_t endian = buffer.littleEndian ? 0 : index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
 			alignas(64) uint32_t commands[] = {
-				UINT32_C(0xc0076900), // SET_RESOURCE, register + 7 words
+				UINT32_C(0xc0076d00), // SET_RESOURCE, register + 7 words
 				0,
 				OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data))+offset),
 				size-1,
