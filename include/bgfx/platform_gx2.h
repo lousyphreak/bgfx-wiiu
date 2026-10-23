@@ -21,7 +21,7 @@ namespace bgfx
 	/// Pass one descriptor per native window as SwapChain::nwh, including the
 	/// main Init::swapChain; keep it and userData alive
 	/// until shutdown. GX2 must already be initialized. Use inline rendering
-	/// (BGFX_CONFIG_MULTITHREADED=0) and BGFX_RESET_FLIP_AFTER_RENDER.
+	/// (BGFX_CONFIG_MULTITHREADED=0); Wii U builds always present after rendering.
 	/// query reads current availability, not a cached foreground generation.
 	/// present must submit preceding bgfx work before returning. SDL_WIIU_SwapWindow
 	/// provides that submission before its adapter-owned scan copy/swap sequence.

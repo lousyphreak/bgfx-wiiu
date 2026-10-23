@@ -8251,6 +8251,9 @@ namespace bgfx
 
 		static uint32_t checkResetFlags(uint32_t _flags)
 		{
+#if BX_PLATFORM_WIIU
+			_flags |= BGFX_RESET_FLIP_AFTER_RENDER;
+#endif
 			const uint32_t maskFlags = ~(0
 				| (0 != (g_caps.supported & BGFX_CAPS_LOW_LATENCY) ? 0 : BGFX_RESET_LOW_LATENCY_MASK)
 				);

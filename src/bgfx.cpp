@@ -2560,6 +2560,10 @@ namespace bgfx
 		BX_ASSERT(BGFX_RESET_LOW_LATENCY_MASK != (_init.reset&BGFX_RESET_LOW_LATENCY_MASK), "Set either `BGFX_RESET_LOW_LATENCY_ON` or `BGFX_RESET_LOW_LATENCY_BOOST`, not both!");
 
 		m_init = _init;
+#if BX_PLATFORM_WIIU
+		// The borrowed GX2 presentation target is acquired for the current frame.
+		m_init.reset |= BGFX_RESET_FLIP_AFTER_RENDER;
+#endif
 
 		m_uniformCache.reserve(m_init.limits.minUniformCacheSize);
 

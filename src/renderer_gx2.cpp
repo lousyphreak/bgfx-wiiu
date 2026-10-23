@@ -27,9 +27,44 @@ namespace bgfx { namespace gx2
 	static void writeFloats(void* _dst, const void* _src, uint32_t _count)
 	{
 		uint32_t* dst = (uint32_t*)_dst;
-		const uint32_t* src = (const uint32_t*)_src;
-		for (uint32_t ii = 0; ii < _count; ++ii) dst[ii] = bx::toLittleEndian(src[ii]);
+		const uint8_t* src = (const uint8_t*)_src;
+		for (uint32_t ii = 0; ii < _count; ++ii)
+		{
+			uint32_t bits;
+			bx::memCopy(&bits, src+ii*4, 4);
+			dst[ii] = bx::toLittleEndian(bits);
+		}
 	}
+
+	static const char* s_attribName[] =
+	{
+		"a_position",
+		"a_normal",
+		"a_tangent",
+		"a_bitangent",
+		"a_color0",
+		"a_color1",
+		"a_color2",
+		"a_color3",
+		"a_indices",
+		"a_weight",
+		"a_texcoord0",
+		"a_texcoord1",
+		"a_texcoord2",
+		"a_texcoord3",
+		"a_texcoord4",
+		"a_texcoord5",
+		"a_texcoord6",
+		"a_texcoord7",
+		"a_texcoord8",
+		"a_texcoord9",
+		"a_texcoord10",
+		"a_texcoord11",
+		"a_texcoord12",
+		"a_texcoord13",
+		"a_texcoord14",
+		"a_texcoord15",
+	};
 
 	static const GX2CompareFunction s_compare[] =
 	{
@@ -2249,7 +2284,7 @@ namespace bgfx { namespace gx2
 						const Buffer& buffer = m_vertexBuffers[stream.m_handle.idx];
 						const VertexLayout& layout = m_layouts[isValid(stream.m_layoutHandle) ? stream.m_layoutHandle.idx : buffer.layout.idx];
 						for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
-							if (layout.has(Attrib::Enum(aa)) && 0 == bx::strCmp(var.name, getAttribName(Attrib::Enum(aa))))
+							if (layout.has(Attrib::Enum(aa)) && 0 == bx::strCmp(var.name, s_attribName[aa]))
 							{ attributes[count++] = attribute(var, layout, Attrib::Enum(aa), ss); found = true; break; }
 					}
 					for (uint32_t jj = 0; !found && jj < instanceStride/16; ++jj)
@@ -2807,7 +2842,7 @@ namespace bgfx { namespace gx2
 					viewport(renderView); clear(renderView, _clearQuad, _render->m_colorPalette);
 				}
 				const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
-				if (!isValid(key.m_program)) continue; // touch still executes view clear
+				if (0 == draw.m_streamMask) continue; // touch still executes the view clear; vertex-ID draws use UINT32_MAX
 				++stats.numDraw;
 				if (draw.m_uniformBegin < draw.m_uniformEnd)
 					rendererUpdateUniforms(this, _render->m_uniformBuffer[draw.m_uniformIdx], draw.m_uniformBegin, draw.m_uniformEnd);
