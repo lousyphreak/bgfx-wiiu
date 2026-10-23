@@ -428,7 +428,11 @@ struct OcornutImguiContext
 			.begin()
 			.add(bgfx::Attrib::Position,  2, bgfx::AttribType::Float)
 			.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+#if BX_PLATFORM_WIIU
+			.addPackedColor(bgfx::Attrib::Color0)
+#else
 			.add(bgfx::Attrib::Color0,    4, bgfx::AttribType::Uint8, true)
+#endif // BX_PLATFORM_WIIU
 			.end();
 
 		s_tex = bgfx::createUniform("s_tex", bgfx::UniformType::Sampler);

@@ -881,8 +881,13 @@ TextBufferManager::TextBufferManager(FontManager* _fontManager)
 		.add(bgfx::Attrib::TexCoord0, 4, bgfx::AttribType::Int16, true)
 		.add(bgfx::Attrib::TexCoord1, 4, bgfx::AttribType::Int16, true)
 		.add(bgfx::Attrib::TexCoord2, 4, bgfx::AttribType::Int16, true)
+#if BX_PLATFORM_WIIU
+		.addPackedColor(bgfx::Attrib::Color0)
+		.addPackedColor(bgfx::Attrib::Color1)
+#else
 		.add(bgfx::Attrib::Color0,    4, bgfx::AttribType::Uint8, true)
 		.add(bgfx::Attrib::Color1,    4, bgfx::AttribType::Uint8, true)
+#endif // BX_PLATFORM_WIIU
 		.end();
 
 	s_texColor = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);

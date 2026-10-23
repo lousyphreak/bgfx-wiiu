@@ -1427,6 +1427,22 @@ BGFX_C_API bgfx_vertex_layout_t* bgfx_vertex_layout_begin(bgfx_vertex_layout_t* 
  */
 BGFX_C_API bgfx_vertex_layout_t* bgfx_vertex_layout_add(bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib, uint8_t _num, bgfx_attrib_type_t _type, bool _normalized, bool _asInt);
 
+
+/**
+ * Add four normalized color components stored in a native uint32_t ABGR word.
+ * Component 0 occupies bits 0-7, through component 3 in bits 24-31.
+ * Use bgfx_vertex_layout_add(..., 4, BGFX_ATTRIB_TYPE_UINT8, true, false)
+ * for an array of four bytes.
+ *
+ * @param[in] _attrib Attribute semantics.
+ * @returns Returns itself.
+ * @remarks Must be called between begin/end.
+ */
+BGFX_C_API bgfx_vertex_layout_t* bgfx_vertex_layout_add_packed_color(bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib);
+
+/** Returns true if the attribute stores a native uint32_t ABGR word. */
+BGFX_C_API bool bgfx_vertex_layout_is_packed_color(const bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib);
+
 /**
  * Decode attribute.
  *
@@ -4537,6 +4553,8 @@ typedef enum bgfx_function_id
     BGFX_FUNCTION_ID_ATTACHMENT_INIT,
     BGFX_FUNCTION_ID_VERTEX_LAYOUT_BEGIN,
     BGFX_FUNCTION_ID_VERTEX_LAYOUT_ADD,
+    BGFX_FUNCTION_ID_VERTEX_LAYOUT_ADD_PACKED_COLOR,
+    BGFX_FUNCTION_ID_VERTEX_LAYOUT_IS_PACKED_COLOR,
     BGFX_FUNCTION_ID_VERTEX_LAYOUT_DECODE,
     BGFX_FUNCTION_ID_VERTEX_LAYOUT_HAS,
     BGFX_FUNCTION_ID_VERTEX_LAYOUT_SKIP,
@@ -4770,6 +4788,8 @@ struct bgfx_interface_vtbl
     void (*attachment_init)(bgfx_attachment_t* _this, bgfx_texture_handle_t _handle, bgfx_access_t _access, uint16_t _layer, uint16_t _numLayers, uint16_t _mip, uint8_t _flags);
     bgfx_vertex_layout_t* (*vertex_layout_begin)(bgfx_vertex_layout_t* _this, bgfx_renderer_type_t _rendererType);
     bgfx_vertex_layout_t* (*vertex_layout_add)(bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib, uint8_t _num, bgfx_attrib_type_t _type, bool _normalized, bool _asInt);
+    bgfx_vertex_layout_t* (*vertex_layout_add_packed_color)(bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib);
+    bool (*vertex_layout_is_packed_color)(const bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib);
     void (*vertex_layout_decode)(const bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib, uint8_t * _num, bgfx_attrib_type_t * _type, bool * _normalized, bool * _asInt);
     bool (*vertex_layout_has)(const bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib);
     bgfx_vertex_layout_t* (*vertex_layout_skip)(bgfx_vertex_layout_t* _this, uint8_t _num);

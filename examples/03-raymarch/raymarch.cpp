@@ -24,7 +24,11 @@ struct PosColorTexCoord0Vertex
 		ms_layout
 			.begin()
 			.add(bgfx::Attrib::Position,  3, bgfx::AttribType::Float)
+#if BX_PLATFORM_WIIU
+			.addPackedColor(bgfx::Attrib::Color0)
+#else
 			.add(bgfx::Attrib::Color0,    4, bgfx::AttribType::Uint8, true)
+#endif // BX_PLATFORM_WIIU
 			.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
 			.end();
 	}

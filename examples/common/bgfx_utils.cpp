@@ -478,8 +478,9 @@ namespace
 			bool normalized;
 			bool asInt;
 			_layout.decode(attrib, num, type, normalized, asInt);
-			if (bgfx::AttribType::Uint8 == type
-			||  bgfx::AttribType::Int8  == type)
+			const bool packedColor = _layout.isPackedColor(attrib);
+			if (!packedColor
+			&&  (bgfx::AttribType::Uint8 == type || bgfx::AttribType::Int8 == type) )
 			{
 				continue;
 			}
@@ -487,8 +488,8 @@ namespace
 			const uint32_t size = (bgfx::AttribType::Int16  == type
 							   || bgfx::AttribType::Uint16 == type
 							   || bgfx::AttribType::Half   == type) ? 2 : 4;
-			// Uint10 components share a single packed word.
-			num = bgfx::AttribType::Uint10 == type ? 1 : num;
+			// Uint10 and packed colors each occupy one native word.
+			num = bgfx::AttribType::Uint10 == type || packedColor ? 1 : num;
 			uint8_t* vertex = (uint8_t*)_data + _layout.getOffset(attrib);
 			for (uint32_t ii = 0; ii < _numVertices; ++ii, vertex += _layout.getStride() )
 			{

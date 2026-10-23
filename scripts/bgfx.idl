@@ -1,7 +1,7 @@
 -- vim: syntax=lua
 -- bgfx interface
 
-version(167)
+version(168)
 
 typedef "bool"
 typedef "char"
@@ -1391,6 +1391,21 @@ func.VertexLayout.add
 	.asInt           "bool"             --- Packaging rule for vertexPack, vertexUnpack, and
 	 { default = false }                --- vertexConvert for AttribType::Uint8 and AttribType::Int16.
 	                                    --- Unpacking code must be implemented inside vertex shader.
+
+--- Add four normalized color components stored in a native uint32_t ABGR word.
+--- Component 0 occupies bits 0-7, through component 3 in bits 24-31.
+--- Use add(..., 4, AttribType::Uint8, true) for an array of four bytes.
+---
+--- @remarks Must be called between begin/end.
+---
+func.VertexLayout.addPackedColor
+	"VertexLayout&" --- Returns itself.
+	.attrib "Attrib::Enum" --- Attribute semantics.
+
+--- Returns true if the attribute stores a native uint32_t ABGR word.
+func.VertexLayout.isPackedColor { const, cppinline = "return has(_attrib) && 0 != (m_attributes[_attrib] & (1<<9));" }
+	"bool"
+	.attrib "Attrib::Enum"
 
 --- Decode attribute.
 func.VertexLayout.decode { const }

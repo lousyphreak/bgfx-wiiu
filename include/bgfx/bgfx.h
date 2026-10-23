@@ -1240,6 +1240,23 @@ namespace bgfx
 			, bool _asInt = false
 			);
 
+		/// Add four normalized color components stored in a native uint32_t ABGR word.
+		/// Component 0 occupies bits 0-7, through component 3 in bits 24-31.
+		/// Use add(..., 4, AttribType::Uint8, true) for an array of four bytes.
+		///
+		/// @param[in] _attrib Attribute semantics.
+		/// @returns Returns itself.
+		/// @remarks Must be called between begin/end.
+		/// @attention C99's equivalent binding is `bgfx_vertex_layout_add_packed_color`.
+		///
+		VertexLayout& addPackedColor(Attrib::Enum _attrib);
+
+		/// Returns true if the attribute stores a native uint32_t ABGR word.
+		///
+		/// @attention C99's equivalent binding is `bgfx_vertex_layout_is_packed_color`.
+		///
+		bool isPackedColor(Attrib::Enum _attrib) const { return has(_attrib) && 0 != (m_attributes[_attrib] & (1<<9)); }
+
 		/// Decode attribute.
 		///
 		/// @param[in] _attrib Attribute semantics. See: `bgfx::Attrib`

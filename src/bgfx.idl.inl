@@ -92,6 +92,18 @@ BGFX_C_API bgfx_vertex_layout_t* bgfx_vertex_layout_add(bgfx_vertex_layout_t* _t
 	return (bgfx_vertex_layout_t*)&This->add((bgfx::Attrib::Enum)_attrib, _num, (bgfx::AttribType::Enum)_type, _normalized, _asInt);
 }
 
+BGFX_C_API bgfx_vertex_layout_t* bgfx_vertex_layout_add_packed_color(bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib)
+{
+	bgfx::VertexLayout* This = (bgfx::VertexLayout*)_this;
+	return (bgfx_vertex_layout_t*)&This->addPackedColor((bgfx::Attrib::Enum)_attrib);
+}
+
+BGFX_C_API bool bgfx_vertex_layout_is_packed_color(const bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib)
+{
+	const bgfx::VertexLayout* This = (const bgfx::VertexLayout*)_this;
+	return This->isPackedColor((bgfx::Attrib::Enum)_attrib);
+}
+
 BGFX_C_API void bgfx_vertex_layout_decode(const bgfx_vertex_layout_t* _this, bgfx_attrib_t _attrib, uint8_t * _num, bgfx_attrib_type_t * _type, bool * _normalized, bool * _asInt)
 {
 	const bgfx::VertexLayout* This = (const bgfx::VertexLayout*)_this;
@@ -1480,6 +1492,8 @@ BGFX_C_API bgfx_interface_vtbl_t* bgfx_get_interface(uint32_t _version)
 			bgfx_attachment_init,
 			bgfx_vertex_layout_begin,
 			bgfx_vertex_layout_add,
+			bgfx_vertex_layout_add_packed_color,
+			bgfx_vertex_layout_is_packed_color,
 			bgfx_vertex_layout_decode,
 			bgfx_vertex_layout_has,
 			bgfx_vertex_layout_skip,

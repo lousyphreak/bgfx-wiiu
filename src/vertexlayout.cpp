@@ -113,6 +113,13 @@ namespace bgfx
 		return *this;
 	}
 
+	VertexLayout& VertexLayout::addPackedColor(Attrib::Enum _attrib)
+	{
+		add(_attrib, 4, AttribType::Uint8, true);
+		m_attributes[_attrib] |= 1<<9;
+		return *this;
+	}
+
 	void VertexLayout::decode(Attrib::Enum _attrib, uint8_t& _num, AttribType::Enum& _type, bool& _normalized, bool& _asInt) const
 	{
 		uint16_t val = m_attributes[_attrib];
@@ -284,6 +291,9 @@ namespace bgfx
 		return s_attribTypeToId[_attr].id;
 	}
 
+	// The high type-ID bit extends the existing layout record without changing its size.
+	static constexpr uint16_t kPackedColorTypeIdBit = 0x8000;
+
 	int32_t write(bx::WriterI* _writer, const VertexLayout& _layout, bx::Error* _err)
 	{
 		BX_ERROR_SCOPE(_err);
@@ -311,7 +321,9 @@ namespace bgfx
 				total += bx::writeLE(_writer, _layout.m_offset[attr], _err);
 				total += bx::writeLE(_writer, s_attribToId[attr].id, _err);
 				total += bx::write(_writer, num, _err);
-				total += bx::writeLE(_writer, s_attribTypeToId[type].id, _err);
+				const uint16_t typeId = s_attribTypeToId[type].id
+					| (_layout.isPackedColor(Attrib::Enum(attr) ) ? kPackedColorTypeIdBit : 0);
+				total += bx::writeLE(_writer, typeId, _err);
 				total += bx::write(_writer, normalized, _err);
 				total += bx::write(_writer, asInt, _err);
 			}
@@ -365,11 +377,18 @@ namespace bgfx
 			}
 
 			Attrib::Enum     attr = idToAttrib(attribId);
-			AttribType::Enum type = idToAttribType(attribTypeId);
+			AttribType::Enum type = idToAttribType(attribTypeId & ~kPackedColorTypeIdBit);
 			if (Attrib::Count     != attr
 			&&  AttribType::Count != type)
 			{
-				_layout.add(attr, num, type, normalized, asInt);
+				if (0 != (attribTypeId & kPackedColorTypeIdBit) )
+				{
+					_layout.addPackedColor(attr);
+				}
+				else
+				{
+					_layout.add(attr, num, type, normalized, asInt);
+				}
 				_layout.m_offset[attr] = offset;
 			}
 		}
@@ -389,6 +408,18 @@ namespace bgfx
 
 		uint32_t stride = _layout.getStride();
 		uint8_t* data = (uint8_t*)_data + _index*stride + _layout.getOffset(_attr);
+
+		if (_layout.isPackedColor(_attr) )
+		{
+			uint32_t packed = 0;
+			for (uint32_t ii = 0; ii < 4; ++ii)
+			{
+				const uint8_t component = uint8_t(_inputNormalized ? _input[ii]*255.0f : _input[ii]);
+				packed |= uint32_t(component) << (ii*8);
+			}
+			bx::memCopy(data, &packed, sizeof(packed) );
+			return;
+		}
 
 		uint8_t num;
 		AttribType::Enum type;
@@ -546,6 +577,17 @@ namespace bgfx
 
 		uint32_t stride = _layout.getStride();
 		uint8_t* data = (uint8_t*)_data + _index*stride + _layout.getOffset(_attr);
+
+		if (_layout.isPackedColor(_attr) )
+		{
+			uint32_t packed;
+			bx::memCopy(&packed, data, sizeof(packed) );
+			for (uint32_t ii = 0; ii < 4; ++ii)
+			{
+				_output[ii] = float(uint8_t(packed >> (ii*8) ) )*1.0f/255.0f;
+			}
+			return;
+		}
 
 		uint8_t num;
 		AttribType::Enum type;
