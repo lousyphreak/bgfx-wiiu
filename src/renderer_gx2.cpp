@@ -177,7 +177,7 @@ namespace bgfx { namespace gx2
 			g_caps.limits.maxTextureSamplers = 16;
 			g_caps.limits.maxComputeBindings = 0;
 			g_caps.limits.maxBlits = 0;
-			g_caps.limits.maxOcclusionQueries = 0;
+			g_caps.limits.maxOcclusionQueries = BGFX_CONFIG_MAX_OCCLUSION_QUERIES;
 			g_caps.limits.maxInstanceData = 16;
 		}
 
@@ -748,7 +748,140 @@ namespace bgfx { namespace gx2
 		void createFrameBuffer(FrameBufferHandle, const SwapChain&) override { unsupported("additional swap chains"); }
 		void destroyFrameBuffer(FrameBufferHandle _handle) override { m_frameBuffers[_handle.idx].attachments.clear(); }
 		void requestScreenShot(FrameBufferHandle, const char*) override { unsupported("screenshots"); }
-		void invalidateOcclusionQuery(OcclusionQueryHandle) override { unsupported("occlusion queries"); }
+		void invalidateOcclusionQuery(OcclusionQueryHandle _handle) override
+		{
+			// A reused bgfx handle must never receive an old allocation's result.
+			for (OcclusionSample& sample : m_pendingOcclusion)
+				if (sample.handle.idx == _handle.idx) sample.handle = BGFX_INVALID_HANDLE;
+		}
+
+		void resolveOcclusion(Frame* _render)
+		{
+			const OSTime completed = GX2GetRetiredTimeStamp();
+			size_t consumed = 0;
+			for (; consumed < m_pendingOcclusion.size(); ++consumed)
+			{
+				const OcclusionSample& sample = m_pendingOcclusion[consumed];
+				if (sample.block->stamp > completed) break;
+				if (isValid(sample.handle))
+				{
+					// Imported query calls can touch their payload on the CPU. Discard
+					// cached initialization only after the GPU writer has completed.
+					DCInvalidateRange(sample.block->data, sample.block->size);
+					uint64_t pixels;
+					if (!GX2QueryGetOcclusionResult((const GX2QueryData*)sample.block->data, &pixels)) break;
+					// bgfx's INT32_MIN is NoResult; retain zero and positive counts.
+					_render->m_occlusion[sample.handle.idx] = int32_t(bx::min<uint64_t>(pixels, INT32_MAX));
+				}
+				m_freeQueryBlocks.push_back(sample.block);
+			}
+			m_pendingOcclusion.erase(m_pendingOcclusion.begin(), m_pendingOcclusion.begin() + consumed);
+		}
+
+		bool isVisible(Frame* _render, OcclusionQueryHandle _handle, bool _visible)
+		{
+			resolveOcclusion(_render);
+			// Same last-available CPU result policy as this pin's GL/VK/WebGPU.
+			// INT32_MIN (NoResult) is nonzero, so a positive condition draws initially.
+			return _visible == (0 != _render->m_occlusion[_handle.idx]);
+		}
+
+		Block* beginOcclusion(OcclusionQueryHandle _handle)
+		{
+			// reuse() allocates when no retired spare exists; acquire() can wait.
+			Block* block = reuse(m_freeQueryBlocks, sizeof(GX2QueryData), 64, true);
+			touch(block);
+			GX2QueryBegin(GX2_QUERY_TYPE_OCCLUSION_CPU, (GX2QueryData*)block->data);
+			m_pendingOcclusion.push_back({ block, _handle });
+			return block;
+		}
+
+		void endOcclusion(Block* _block)
+		{
+			GX2QueryEnd(GX2_QUERY_TYPE_OCCLUSION_CPU, (GX2QueryData*)_block->data);
+			// The end must belong to the final epoch even if a batch split sealed begin.
+			touch(_block);
+		}
+
+		uint32_t beginGpuTimer(uint16_t _view, uint32_t _frameNum)
+		{
+			Block* begin = reuse(m_freeQueryBlocks, 64, 64, true);
+			// The native sampling call publishes its sentinel in an owned 64-byte slot.
+			GX2SampleBottomGPUCycle((uint64_t*)begin->data);
+			touch(begin);
+			const uint32_t index = uint32_t(m_pendingGpuTimers.size());
+			m_pendingGpuTimers.push_back({ begin, NULL, _frameNum, _view });
+			return index;
+		}
+
+		void endGpuTimer(uint32_t _index)
+		{
+			GpuTimerSample& sample = m_pendingGpuTimers[_index];
+			sample.end = reuse(m_freeQueryBlocks, 64, 64, true);
+			GX2SampleBottomGPUCycle((uint64_t*)sample.end->data);
+			touch(sample.end);
+		}
+
+		void resolveGpuTimers(Frame* _render)
+		{
+			const OSTime completed = GX2GetRetiredTimeStamp();
+			size_t consumed = 0;
+			for (; consumed < m_pendingGpuTimers.size(); ++consumed)
+			{
+				const GpuTimerSample& sample = m_pendingGpuTimers[consumed];
+				// All intervals are closed before the next submit's resolver. The end's
+				// submission covers its earlier begin, even across batch splits/seals.
+				if (sample.end->stamp > completed) break;
+				DCInvalidateRange(sample.begin->data, sample.begin->size);
+				DCInvalidateRange(sample.end->data, sample.end->size);
+				// GX2's cycle API exposes native u64 values, unlike raw query regs.
+				const uint64_t begin = *(const uint64_t*)sample.begin->data;
+				const uint64_t end = *(const uint64_t*)sample.end->data;
+				if (begin != GX2_GPU_TIMESTAMP_INVALID && end != GX2_GPU_TIMESTAMP_INVALID)
+				{
+					GpuTimerResult& result = m_gpuTimerResults[sample.view];
+					result.begin = int64_t(begin);
+					result.end = int64_t(end);
+					result.frameNum = sample.frameNum;
+					if (sample.view == BGFX_CONFIG_MAX_VIEWS)
+						m_maxGpuLatency = bx::max(m_maxGpuLatency, _render->m_frameNum - sample.frameNum);
+				}
+				// An invalid retired timestamp cannot become valid later: keep the
+				// last valid stats, and recycle without a readiness spin or a wait.
+				m_freeQueryBlocks.push_back(sample.begin);
+				m_freeQueryBlocks.push_back(sample.end);
+			}
+			m_pendingGpuTimers.erase(m_pendingGpuTimers.begin(), m_pendingGpuTimers.begin() + consumed);
+			const GpuTimerResult& result = m_gpuTimerResults[BGFX_CONFIG_MAX_VIEWS];
+			Stats& stats = _render->m_perfStats;
+			stats.gpuTimeBegin = result.begin;
+			stats.gpuTimeEnd = result.end;
+			stats.gpuFrameNum = result.frameNum;
+			stats.gpuTimerFreq = GX2_GPU_TIMESTAMP_FREQUENCY;
+			stats.maxGpuLatency = m_maxGpuLatency;
+		}
+
+		uint32_t beginViewTimer(Frame* _render, uint16_t _view)
+		{
+			if (0 == (_render->m_debug & BGFX_DEBUG_PROFILER)) return UINT32_MAX;
+			ViewStats& stats = _render->m_perfStats.viewStats[_render->m_perfStats.numViews];
+			stats.view = ViewId(_view);
+			bx::strCopy(stats.name, BGFX_CONFIG_MAX_VIEW_NAME, getViewName(_render, _view));
+			stats.cpuTimeBegin = bx::getHPCounter();
+			return beginGpuTimer(_view, _render->m_frameNum);
+		}
+
+		void endViewTimer(Frame* _render, uint32_t _index)
+		{
+			if (_index == UINT32_MAX) return;
+			endGpuTimer(_index);
+			ViewStats& stats = _render->m_perfStats.viewStats[_render->m_perfStats.numViews++];
+			stats.cpuTimeEnd = bx::getHPCounter();
+			const GpuTimerResult& result = m_gpuTimerResults[stats.view];
+			stats.gpuTimeBegin = result.begin;
+			stats.gpuTimeEnd = result.end;
+			stats.gpuFrameNum = result.frameNum;
+		}
 		void setMarker(const char*, uint16_t) override {}
 		void setName(Handle, const char*, uint16_t) override {}
 
@@ -1424,14 +1557,17 @@ namespace bgfx { namespace gx2
 			m_mipGen = &_mipGen;
 			Stats& stats = _render->m_perfStats;
 			stats.cpuTimeBegin = bx::getHPCounter(); stats.cpuTimerFreq = bx::getHPFrequency();
-			stats.gpuTimeBegin = 0; stats.gpuTimeEnd = 0; stats.gpuTimerFreq = 0; stats.gpuFrameNum = 0;
+			stats.numViews = 0;
 			stats.gpuMemoryMax = -INT64_MAX; stats.gpuMemoryUsed = -INT64_MAX;
 			bx::memSet(stats.numPrims, 0, sizeof(stats.numPrims));
 			collect();
+			resolveOcclusion(_render); resolveGpuTimers(_render);
 			m_target = {};
 			if (!m_platform.query(m_platform.userData, &m_target) || !m_target.color || !m_target.context)
 			{ m_target = {}; stats.cpuTimeEnd = bx::getHPCounter(); return; }
 			if (m_target.color->surface.aa != GX2_AA_MODE1X) unsupported("multisampled presentation targets");
+			const uint32_t frameTimer = beginGpuTimer(BGFX_CONFIG_MAX_VIEWS, _render->m_frameNum);
+			uint32_t viewTimer = UINT32_MAX;
 			uploadTextures();
 			restore();
 			GX2SetSwapInterval((_render->m_reset & BGFX_RESET_VSYNC) ? 1 : 0);
@@ -1451,12 +1587,14 @@ namespace bgfx { namespace gx2
 				const View& renderView = _render->view(key.m_view);
 				if (view != key.m_view)
 				{
+					endViewTimer(_render, viewTimer); viewTimer = UINT32_MAX;
 					view = key.m_view;
 					if (m_currentFrameBuffer.idx != renderView.m_fbh.idx)
 					{
 						endBatch(); finishRenderPass();
 						restore(); bindFrameBuffer(renderView.m_fbh); beginBatch();
 					}
+					viewTimer = beginViewTimer(_render, view);
 					while (ucs.hasItem(view))
 					{
 						const UniformCacheItem uniform = ucs.advance();
@@ -1469,6 +1607,9 @@ namespace bgfx { namespace gx2
 				if (!isValid(key.m_program)) continue; // touch still executes view clear
 				if (draw.m_uniformBegin < draw.m_uniformEnd)
 					rendererUpdateUniforms(this, _render->m_uniformBuffer[draw.m_uniformIdx], draw.m_uniformBegin, draw.m_uniformEnd);
+				const bool hasOcclusionQuery = 0 != (draw.m_stateFlags & BGFX_STATE_INTERNAL_OCCLUSION_QUERY);
+				if (isValid(draw.m_occlusionQuery) && !hasOcclusionQuery
+				&& !isVisible(_render, draw.m_occlusionQuery, 0 != (draw.m_submitFlags & BGFX_SUBMIT_INTERNAL_OCCLUSION_VISIBLE))) continue;
 				if (isValid(draw.m_indirectBuffer)) { unsupported("indirect drawing"); continue; }
 				if (_render->m_debug & BGFX_DEBUG_IFH) continue;
 				Rect scissor = renderView.m_clippedRect;
@@ -1495,6 +1636,7 @@ namespace bgfx { namespace gx2
 
 				vertexInput(program, draw);
 				const GX2PrimitiveMode primitive = s_primitive[(draw.m_stateFlags & BGFX_STATE_PT_MASK) >> BGFX_STATE_PT_SHIFT];
+				Block* occlusion = hasOcclusionQuery ? beginOcclusion(draw.m_occlusionQuery) : NULL;
 				if (isValid(draw.m_indexBuffer))
 				{
 					Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
@@ -1518,9 +1660,12 @@ namespace bgfx { namespace gx2
 							}
 					GX2DrawEx(primitive, count, 0, draw.m_numInstances);
 				}
+				if (occlusion) endOcclusion(occlusion);
 			}
+			endViewTimer(_render, viewTimer);
 			endBatch(); finishRenderPass();
 			if (_render->m_debug & BGFX_DEBUG_TEXT) dbgTextSubmit(this, _blitter, _render->m_textVideoMem, BGFX_INVALID_HANDLE, 1);
+			endGpuTimer(frameTimer);
 			stats.cpuTimeEnd = bx::getHPCounter();
 		}
 
@@ -1574,6 +1719,12 @@ namespace bgfx { namespace gx2
 			touch(index.block);
 		}
 		void dbgTextRenderEnd(TextVideoMemBlitter&) override { endBatch(); m_colorWritten = 1; finishRenderPass(); }
+
+		std::vector<OcclusionSample> m_pendingOcclusion;
+		std::vector<Block*> m_freeQueryBlocks;
+		std::vector<GpuTimerSample> m_pendingGpuTimers;
+		GpuTimerResult m_gpuTimerResults[BGFX_CONFIG_MAX_VIEWS + 1];
+		uint32_t m_maxGpuLatency = 0;
 
 		Gx2PlatformData m_platform;
 		Gx2Target m_target = {};

@@ -13,6 +13,7 @@
 #include <gx2/displaylist.h>
 #include <gx2/draw.h>
 #include <gx2/event.h>
+#include <gx2/query.h>
 #include <gx2/mem.h>
 #include <gx2/registers.h>
 #include <gx2/sampler.h>
@@ -34,6 +35,27 @@ namespace bgfx { namespace gx2
 		void* data;
 		uint32_t size;
 		OSTime stamp = 0;
+	};
+
+	struct OcclusionSample
+	{
+		Block* block;
+		OcclusionQueryHandle handle;
+	};
+
+	struct GpuTimerSample
+	{
+		Block* begin;
+		Block* end;
+		uint32_t frameNum;
+		uint16_t view; // BGFX_CONFIG_MAX_VIEWS is the frame interval.
+	};
+
+	struct GpuTimerResult
+	{
+		int64_t begin = 0;
+		int64_t end = 0;
+		uint32_t frameNum = 0;
 	};
 
 	struct Buffer
