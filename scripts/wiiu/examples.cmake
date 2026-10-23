@@ -1,8 +1,11 @@
 # Original bgfx applications, sharing one SDL3/GX2 entry implementation.
 find_package(SDL3 REQUIRED CONFIG)
 set(BGFX_WIIU_EXAMPLES
-    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps"
+    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky"
     CACHE STRING "Numbered example directories to build")
+if("25-c99" IN_LIST BGFX_WIIU_EXAMPLES)
+    enable_language(C)
+endif()
 set(common_dir "${BGFX_DIR}/examples/common")
 set(example_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/example-generated")
 
@@ -41,6 +44,20 @@ if("10-font" IN_LIST BGFX_WIIU_EXAMPLES OR "11-fontsdf" IN_LIST BGFX_WIIU_EXAMPL
         ${common_dir}/font/utf8.cpp)
     list(APPEND embedded_families font)
 endif()
+if("20-nanovg" IN_LIST BGFX_WIIU_EXAMPLES)
+    target_sources(example-common PRIVATE
+        ${common_dir}/nanovg/nanovg.cpp
+        ${common_dir}/nanovg/nanovg_bgfx.cpp)
+    list(APPEND embedded_families nanovg)
+endif()
+if("29-debugdraw" IN_LIST BGFX_WIIU_EXAMPLES OR "32-particles" IN_LIST BGFX_WIIU_EXAMPLES)
+    target_sources(example-common PRIVATE ${common_dir}/debugdraw/debugdraw.cpp)
+    list(APPEND embedded_families debugdraw)
+endif()
+if("32-particles" IN_LIST BGFX_WIIU_EXAMPLES)
+    target_sources(example-common PRIVATE ${common_dir}/ps/particle_system.cpp)
+    list(APPEND embedded_families ps)
+endif()
 foreach(family IN LISTS embedded_families)
     set(embedded "#include <stdint.h>\n")
     file(GLOB embedded_sources CONFIGURE_DEPENDS
@@ -69,8 +86,14 @@ foreach(family IN LISTS embedded_families)
     file(GENERATE OUTPUT "${example_generated_dir}/${family}-gx2.h" CONTENT "${embedded}")
     if(family STREQUAL "imgui")
         set(consumer "${common_dir}/imgui/imgui.cpp")
-    else()
+    elseif(family STREQUAL "font")
         set(consumer "${common_dir}/font/text_buffer_manager.cpp")
+    elseif(family STREQUAL "nanovg")
+        set(consumer "${common_dir}/nanovg/nanovg_bgfx.cpp")
+    elseif(family STREQUAL "debugdraw")
+        set(consumer "${common_dir}/debugdraw/debugdraw.cpp")
+    else()
+        set(consumer "${common_dir}/ps/particle_system.cpp")
     endif()
     set_source_files_properties("${consumer}" PROPERTIES
         COMPILE_OPTIONS "-include;${example_generated_dir}/${family}-gx2.h")
@@ -79,7 +102,7 @@ endforeach()
 foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
     set(example_dir "${BGFX_DIR}/examples/${example}")
     set(package_dir "${CMAKE_CURRENT_BINARY_DIR}/${example}")
-    file(GLOB sources CONFIGURE_DEPENDS "${example_dir}/*.cpp")
+    file(GLOB sources CONFIGURE_DEPENDS "${example_dir}/*.cpp" "${example_dir}/*.c")
     add_executable(example-${example} ${sources})
     target_link_libraries(example-${example} PRIVATE example-common)
     target_include_directories(example-${example} PRIVATE "${BGFX_DIR}/3rdparty")
@@ -93,7 +116,11 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
 
     # GX2 exposes graphics stages only; examples gate optional compute on caps.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
-    if(example STREQUAL "05-instancing" OR example STREQUAL "22-windows")
+    if(example STREQUAL "21-deferred")
+        # The original application gates UAV programs on IMAGE_RW, absent on GX2.
+        list(FILTER shader_sources EXCLUDE REGEX "_uav\\.sc$")
+    endif()
+    if(example MATCHES "^(05-instancing|22-windows|26-occlusion|34-mvs|35-dynamic)$")
         list(APPEND shader_sources
             "${BGFX_DIR}/examples/01-cubes/vs_cubes.sc"
             "${BGFX_DIR}/examples/01-cubes/fs_cubes.sc")
