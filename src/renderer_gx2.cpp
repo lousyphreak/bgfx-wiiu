@@ -420,11 +420,11 @@ namespace bgfx { namespace gx2
 
 		void createTransferBuffer(Buffer& _buffer, uint32_t _size, uint16_t _flags)
 		{
-			if (_flags & BGFX_BUFFER_DRAW_INDIRECT) unsupported("indirect buffers");
 			_buffer.size = _size;
 			_buffer.flags = _flags;
 			_buffer.gpuWritten = false;
-			_buffer.block = (_flags & BGFX_BUFFER_COMPUTE_READ_WRITE)
+			_buffer.littleEndian = false;
+			_buffer.block = (_flags & (BGFX_BUFFER_COMPUTE_READ_WRITE | BGFX_BUFFER_DRAW_INDIRECT))
 				? gpuBufferAllocate(_size) : allocate(_size);
 			// COMPUTE_READ/WRITE are also the existing frontend's transfer eligibility
 			// flags. Accepting them does not advertise compute shader execution.
@@ -449,6 +449,7 @@ namespace bgfx { namespace gx2
 			const bool preserve = !_discard && (_offset != 0 || _size != _buffer.size);
 			// Preserving GPU-written bytes is an actual CPU read. Full overwrites and
 			// explicit discard rename live storage without waiting for it.
+			const bool littleEndian = preserve && _buffer.littleEndian;
 			if (preserve) bufferCpuRead(_buffer);
 			const bool rename = _buffer.block->stamp > GX2GetRetiredTimeStamp();
 			if (rename)
@@ -460,7 +461,11 @@ namespace bgfx { namespace gx2
 				_buffer.block = replacement;
 			}
 			_buffer.gpuWritten = false;
-			bx::memCopy((uint8_t*)_buffer.block->data+_offset, _data, _size);
+			_buffer.littleEndian = littleEndian;
+			// A partial CPU upload into a native GPU result keeps its representation;
+			// only the newly supplied native CPU words need endian conversion.
+			copyTextureRow((uint8_t*)_buffer.block->data+_offset, _data, _size,
+				littleEndian ? (!_vertex && !(_buffer.flags & BGFX_BUFFER_INDEX32) ? 2 : 4) : 0);
 			// A preserved rename wrote the whole buffer; otherwise only this range was
 			// CPU-written. CPU publication must never run on GPU-owned stale contents.
 			const bool whole = rename && preserve;
@@ -623,6 +628,7 @@ namespace bgfx { namespace gx2
 			gpuBufferSource(src);
 			gpuBufferDestination(dst);
 			gpuCopyBytes(src.block, _blit.m_srcOffset, dst.block, _blit.m_dstOffset, _blit.m_size);
+			dst.littleEndian = src.littleEndian;
 			gpuBufferWritten(dst);
 		}
 
@@ -681,6 +687,7 @@ namespace bgfx { namespace gx2
 					retire(block);
 				}
 			}
+			dst.littleEndian = true;
 			gpuBufferWritten(dst);
 		}
 
@@ -796,16 +803,57 @@ namespace bgfx { namespace gx2
 		void destroyVertexBuffer(VertexBufferHandle _handle) override { destroyBuffer(m_vertexBuffers[_handle.idx]); }
 		void destroyDynamicVertexBuffer(VertexBufferHandle _handle) override { destroyVertexBuffer(_handle); }
 
+		uint32_t computeGfdSize(const void* _gfd, GFDBlockType _type, uint32_t _bytes)
+		{
+			const uint8_t* file = (const uint8_t*)_gfd;
+			for (uint32_t offset = ((const GFDHeader*)file)->headerSize; offset < _bytes;)
+			{
+				const GFDBlockHeader* block = (const GFDBlockHeader*)(file+offset);
+				if (block->type == _type) return block->dataSize;
+				offset += block->headerSize+block->dataSize;
+			}
+			return 0;
+		}
+
+		void loadComputeShader(Shader& _shader, const void* _gfd, uint32_t _bytes)
+		{
+			const uint8_t* file = (const uint8_t*)_gfd;
+			const GFDHeader* header = (const GFDHeader*)file;
+			for (uint32_t offset = header->headerSize; offset < _bytes;)
+			{
+				const GFDBlockHeader* block = (const GFDBlockHeader*)(file+offset);
+				const uint8_t* data = file+offset+block->headerSize;
+				if (block->type == GFD_BLOCK_COMPUTE_SHADER_HEADER)
+				{
+					uint8_t* dst = (uint8_t*)_shader.header->data;
+					bx::memCopy(dst, data, block->dataSize);
+					const GFDRelocationHeader* reloc = (const GFDRelocationHeader*)(data+block->dataSize-sizeof(GFDRelocationHeader));
+					const uint32_t* patches = (const uint32_t*)(data+(reloc->patchOffset & ~GFD_PATCH_MASK));
+					for (uint32_t ii = 0; ii < reloc->patchCount; ++ii)
+					{
+						if (!patches[ii]) continue;
+						uint32_t* target = (uint32_t*)(dst+(patches[ii] & ~GFD_PATCH_MASK));
+						*target = uint32_t(uintptr_t(dst+(*target & ~GFD_PATCH_MASK)));
+					}
+				}
+				else if (block->type == GFD_BLOCK_COMPUTE_SHADER_PROGRAM)
+					bx::memCopy(_shader.program->data, data, block->dataSize);
+				offset += block->headerSize+block->dataSize;
+			}
+			((GX2ComputeShader*)_shader.header->data)->program = _shader.program->data;
+		}
+
 		void createShader(ShaderHandle _handle, const Memory* _mem) override
 		{
 			Shader& shader = m_shaders[_handle.idx];
 			const uint8_t* ptr = _mem->data;
 			const uint32_t magic = readLE(ptr, 4);
 			shader.fragment = isShaderType(magic, 'F');
-			if (!shader.fragment && !isShaderType(magic, 'V')) { unsupported("compute shaders"); return; }
+			shader.compute = isShaderType(magic, 'C');
 			readLE(ptr, 4); readLE(ptr, 4); // interface hashes
 			shader.rawSrvMask = readLE(ptr, 4);
-			if (readLE(ptr, 4)) unsupported("writable shader buffers");
+			const uint32_t uavMask = readLE(ptr, 4);
+			if (uavMask && !shader.compute) unsupported("writable graphics shader buffers");
 			const uint16_t count = uint16_t(readLE(ptr, 2));
 			for (uint32_t ii = 0; ii < count; ++ii)
 			{
@@ -838,18 +886,38 @@ namespace bgfx { namespace gx2
 					shader.uniforms.push_back(uniform);
 				}
 			}
+			if (shader.compute)
+			{
+				const uint32_t signature = readLE(ptr, 4);
+				BGFX_FATAL(signature == UINT32_C(0x31435347), Fatal::InvalidShader, "GX2 compute resource ABI must be GSC1.");
+				const uint32_t resources = readLE(ptr, 4);
+				for (uint32_t ii = 0; ii < resources; ++ii)
+				{
+					ComputeResource resource;
+					resource.binding = readLE(ptr, 4); resource.kind = readLE(ptr, 4);
+					resource.format = readLE(ptr, 4); resource.elementBytes = readLE(ptr, 4);
+					resource.read = readLE(ptr, 4); resource.write = readLE(ptr, 4);
+					shader.resources.push_back(resource);
+				}
+			}
 			const uint32_t gfdSize = readLE(ptr, 4);
-			BX_UNUSED(gfdSize);
 			// The envelope is byte-packed; GFD reads native words and needs alignment.
 			void* gfd = bx::alloc(g_allocator, gfdSize, 4);
 			bx::memCopy(gfd, ptr, gfdSize);
-			const uint32_t headerSize = shader.fragment ? GFDGetPixelShaderHeaderSize(0, gfd) : GFDGetVertexShaderHeaderSize(0, gfd);
-			const uint32_t programSize = shader.fragment ? GFDGetPixelShaderProgramSize(0, gfd) : GFDGetVertexShaderProgramSize(0, gfd);
+			const uint32_t headerSize = shader.compute ? computeGfdSize(gfd, GFD_BLOCK_COMPUTE_SHADER_HEADER, gfdSize) : shader.fragment ? GFDGetPixelShaderHeaderSize(0, gfd) : GFDGetVertexShaderHeaderSize(0, gfd);
+			const uint32_t programSize = shader.compute ? computeGfdSize(gfd, GFD_BLOCK_COMPUTE_SHADER_PROGRAM, gfdSize) : shader.fragment ? GFDGetPixelShaderProgramSize(0, gfd) : GFDGetVertexShaderProgramSize(0, gfd);
 			shader.header = allocate(headerSize);
 			shader.program = allocate(programSize, GX2_SHADER_PROGRAM_ALIGNMENT);
 			BOOL loaded;
 			GX2UniformBlock* block;
-			if (shader.fragment)
+			if (shader.compute)
+			{
+				loadComputeShader(shader, gfd, gfdSize);
+				const GX2ComputeShader* native = (const GX2ComputeShader*)shader.header->data;
+				block = GX2GetComputeUniformBlock(native, "__cafe_loose_uniforms");
+				loaded = TRUE;
+			}
+			else if (shader.fragment)
 			{
 				GX2PixelShader* native = (GX2PixelShader*)shader.header->data;
 				loaded = GFDGetPixelShader(native, shader.program->data, 0, gfd);
@@ -872,14 +940,22 @@ namespace bgfx { namespace gx2
 		{
 			Shader& shader = m_shaders[_handle.idx];
 			retire(shader.program); retire(shader.header);
-			shader.uniforms.clear(); shader.predefined.clear(); shader.uniformSize = 0; shader.rawSrvMask = 0;
+			shader.uniforms.clear(); shader.predefined.clear(); shader.resources.clear(); shader.uniformSize = 0; shader.rawSrvMask = 0;
+			shader.compute = shader.fragment = false;
 			bx::memSet(shader.samplerDimensions, 0, sizeof(shader.samplerDimensions));
 		}
 
 		void createProgram(ProgramHandle _handle, ShaderHandle _vsh, ShaderHandle _fsh) override
 		{
-			if (!isValid(_fsh)) { unsupported("compute programs"); return; }
 			Program& program = m_programs[_handle.idx];
+			if (!isValid(_fsh))
+			{
+				program.compute = &m_shaders[_vsh.idx];
+				program.m_numPredefined = 0;
+				for (const PredefinedUniform& predefined : program.compute->predefined)
+					program.m_predefined[program.m_numPredefined++] = predefined;
+				return;
+			}
 			program.vertex = &m_shaders[_vsh.idx]; program.fragment = &m_shaders[_fsh.idx];
 			program.m_numPredefined = 0;
 			for (Shader* shader : { program.vertex, program.fragment })
@@ -891,7 +967,7 @@ namespace bgfx { namespace gx2
 		{
 			Program& program = m_programs[_handle.idx];
 			for (Fetch& fetch : program.fetches) retire(fetch.program);
-			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL;
+			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL; program.compute = NULL;
 		}
 
 		void textureStorage(Texture& _texture, Block* _block)
@@ -2261,6 +2337,7 @@ namespace bgfx { namespace gx2
 		{
 			GX2SetContextState(m_context);
 			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+			GX2SetStreamOutEnable(FALSE);
 			GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
 			GX2SetPolygonControl(GX2_FRONT_FACE_CCW, FALSE, FALSE, FALSE, GX2_POLYGON_MODE_TRIANGLE, GX2_POLYGON_MODE_TRIANGLE, FALSE, FALSE, FALSE);
 			GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
@@ -2390,6 +2467,7 @@ namespace bgfx { namespace gx2
 		{
 			const uint32_t streamMask = _draw.m_streamMask == UINT32_MAX ? 0 : _draw.m_streamMask;
 			uint32_t layouts[BGFX_CONFIG_MAX_VERTEX_STREAMS] = {};
+			uint32_t gpuEndianMask = 0;
 			for (uint32_t ii = 0; ii < BGFX_CONFIG_MAX_VERTEX_STREAMS; ++ii)
 			{
 				if (0 == (streamMask & (1<<ii))) continue;
@@ -2397,6 +2475,7 @@ namespace bgfx { namespace gx2
 				Buffer& buffer = m_vertexBuffers[stream.m_handle.idx];
 				const VertexLayout& layout = m_layouts[isValid(stream.m_layoutHandle) ? stream.m_layoutHandle.idx : buffer.layout.idx];
 				layouts[ii] = layout.m_hash;
+				if (buffer.littleEndian) gpuEndianMask |= 1u << ii;
 				const uint32_t offset = stream.m_startVertex*layout.m_stride;
 				const void* ptr = (const uint8_t*)buffer.block->data+offset;
 				if (m_boundAttributes[ii] != ptr || m_boundStrides[ii] != layout.m_stride)
@@ -2410,13 +2489,14 @@ namespace bgfx { namespace gx2
 			if (instanceStride)
 			{
 				Buffer& buffer = m_vertexBuffers[_draw.m_instanceDataBuffer.idx];
+				if (buffer.littleEndian) gpuEndianMask |= 1u << BGFX_CONFIG_MAX_VERTEX_STREAMS;
 				const void* ptr = (uint8_t*)buffer.block->data+_draw.m_instanceDataOffset;
 				GX2SetAttribBuffer(BGFX_CONFIG_MAX_VERTEX_STREAMS, buffer.size-_draw.m_instanceDataOffset, instanceStride, ptr);
 				touch(buffer.block);
 			}
 			Fetch* fetch = NULL;
 			for (Fetch& candidate : _program.fetches)
-				if (candidate.streamMask == streamMask && candidate.instanceStride == instanceStride
+				if (candidate.streamMask == streamMask && candidate.instanceStride == instanceStride && candidate.gpuEndianMask == gpuEndianMask
 				&& 0 == bx::memCmp(layouts, candidate.layouts, sizeof(layouts))) { fetch = &candidate; break; }
 			if (!fetch)
 			{
@@ -2435,7 +2515,9 @@ namespace bgfx { namespace gx2
 						const VertexLayout& layout = m_layouts[isValid(stream.m_layoutHandle) ? stream.m_layoutHandle.idx : buffer.layout.idx];
 						for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
 							if (layout.has(Attrib::Enum(aa)) && 0 == bx::strCmp(var.name, s_attribName[aa]))
-							{ attributes[count++] = attribute(var, layout, Attrib::Enum(aa), ss); found = true; break; }
+							{ attributes[count] = attribute(var, layout, Attrib::Enum(aa), ss);
+								if (buffer.littleEndian) attributes[count].endianSwap = GX2_ENDIAN_SWAP_NONE;
+								++count; found = true; break; }
 					}
 					for (uint32_t jj = 0; !found && jj < instanceStride/16; ++jj)
 					{
@@ -2446,7 +2528,7 @@ namespace bgfx { namespace gx2
 							stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS;
 							stream.offset = jj*16; stream.format = GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32;
 							stream.type = GX2_ATTRIB_INDEX_PER_INSTANCE; stream.aluDivisor = 1;
-							stream.mask = GX2_SEL_MASK(0, 1, 2, 3); stream.endianSwap = GX2_ENDIAN_SWAP_8_IN_32;
+							stream.mask = GX2_SEL_MASK(0, 1, 2, 3); stream.endianSwap = (gpuEndianMask & (1u << BGFX_CONFIG_MAX_VERTEX_STREAMS)) ? GX2_ENDIAN_SWAP_NONE : GX2_ENDIAN_SWAP_8_IN_32;
 							attributes[count++] = stream; found = true;
 						}
 					}
@@ -2454,7 +2536,7 @@ namespace bgfx { namespace gx2
 				}
 				Fetch native = {};
 				bx::memCopy(native.layouts, layouts, sizeof(layouts));
-				native.streamMask = streamMask; native.instanceStride = instanceStride;
+				native.streamMask = streamMask; native.instanceStride = instanceStride; native.gpuEndianMask = gpuEndianMask;
 				const uint32_t size = GX2CalcFetchShaderSizeEx(count, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
 				native.program = allocate(size, GX2_SHADER_PROGRAM_ALIGNMENT);
 				GX2InitFetchShaderEx(&native.shader, (uint8_t*)native.program->data, count, attributes, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
@@ -2548,13 +2630,13 @@ namespace bgfx { namespace gx2
 		void readonlyBuffer(const Binding& _bind, uint32_t _unit)
 		{
 			if ((_bind.m_type != Binding::VertexBuffer && _bind.m_type != Binding::IndexBuffer)
-			|| _bind.m_access != Access::Read) { unsupported("writable or non-buffer raw bindings"); return; }
+			|| (!m_boundProgram->compute && _bind.m_access != Access::Read)) { unsupported("writable or non-buffer raw bindings"); return; }
 			const bool index = _bind.m_type == Binding::IndexBuffer;
 			Buffer& buffer = index ? m_indexBuffers[_bind.m_idx] : m_vertexBuffers[_bind.m_idx];
 			const uint32_t offset = bx::min(_bind.m_offset, buffer.size);
 			const uint32_t size = bx::min(_bind.m_size, buffer.size-offset);
 			// update() and gpuBufferWritten() publish once at the producer boundary.
-			const uint32_t endian = index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
+			const uint32_t endian = buffer.littleEndian ? 0 : index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
 			alignas(64) uint32_t commands[] = {
 				bx::toLittleEndian(UINT32_C(0xc0076900)), // SET_RESOURCE, register + 7 words
 				0,
@@ -2563,12 +2645,12 @@ namespace bgfx { namespace gx2
 				bx::toLittleEndian((4u << 8) | (13u << 20) | (1u << 26) | (endian << 30)),
 				bx::toLittleEndian(1u), 0, 0, bx::toLittleEndian(UINT32_C(0xc0000000)),
 			};
-			if (m_boundProgram->vertex->rawSrvMask & (1u << _unit))
+			if ((m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex)->rawSrvMask & (1u << _unit))
 			{
 				commands[1] = bx::toLittleEndian(0x460u+7*_unit);
 				GX2CopyDisplayList(commands, sizeof(commands));
 			}
-			if (m_boundProgram->fragment->rawSrvMask & (1u << _unit))
+			if (m_boundProgram->fragment && (m_boundProgram->fragment->rawSrvMask & (1u << _unit)))
 			{
 				commands[1] = bx::toLittleEndian(7*_unit);
 				GX2CopyDisplayList(commands, sizeof(commands));
@@ -2975,6 +3057,291 @@ namespace bgfx { namespace gx2
 			m_colorWritten |= colorMask; m_depthWritten |= m_hasDepth && depthFlags;
 		}
 
+		GX2SurfaceFormat computeImageFormat(uint32_t _format)
+		{
+			switch (_format)
+			{
+			case 1: return GX2_SURFACE_FORMAT_FLOAT_R32_G32_B32_A32;
+			case 2: return GX2_SURFACE_FORMAT_FLOAT_R16_G16_B16_A16;
+			case 3: return GX2_SURFACE_FORMAT_FLOAT_R32;
+			case 5: return GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+			case 8: return GX2_SURFACE_FORMAT_UINT_R32_G32_B32_A32;
+			case 9: return GX2_SURFACE_FORMAT_UINT_R32;
+			default: return GX2_SURFACE_FORMAT_FLOAT_R32_G32_B32_A32; // Quantized float4 intermediates: R16F/RG8/R8.
+			}
+		}
+
+		uint32_t computeLayout(const Shader& _shader, const RenderBind& _bind, std::vector<ComputeOutput>& _outputs)
+		{
+			uint32_t bytes = 0;
+			for (const ComputeResource& resource : _shader.resources)
+			{
+				if (!resource.write) continue;
+				const Binding& bind = _bind.m_bind[resource.binding];
+				ComputeOutput output;
+				output.binding = resource.binding; output.elementBytes = resource.elementBytes;
+				if (resource.kind == 0)
+				{
+					const Buffer& buffer = bind.m_type == Binding::IndexBuffer ? m_indexBuffers[bind.m_idx] : m_vertexBuffers[bind.m_idx];
+					output.size = bx::min(bind.m_size, buffer.size-bind.m_offset);
+				}
+				else
+				{
+					const GX2Surface& surface = m_textures[bind.m_idx].texture.surface;
+					const uint32_t layers = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D ? bx::max(1u, surface.depth >> bind.m_firstMip) : surface.depth;
+					output.layers = bx::min<uint32_t>(bind.m_numLayers, layers-bind.m_firstLayer);
+					output.surface = transferLinear(computeImageFormat(resource.format), bx::max(1u, surface.width >> bind.m_firstMip), bx::max(1u, surface.height >> bind.m_firstMip));
+					output.size = output.surface.imageSize*output.layers;
+				}
+				output.offset = bx::alignUp(bytes, bx::max(256u, output.surface.alignment));
+				bytes = output.offset+output.size;
+				_outputs.push_back(output);
+			}
+			return bx::alignUp(bytes, 256);
+		}
+
+		// Convert a CPU-owned raw buffer once, so every byte of its canonical
+		// allocation has one byte representation. Ownership stays in gpuWritten.
+		void computeBufferNative(Buffer& _buffer, bool _index)
+		{
+			if (_buffer.littleEndian) return;
+			Block* source = gpuBufferAllocate(_buffer.size);
+			DCInvalidateRange(source->data, source->size);
+			gpuCopyBytes(_buffer.block, 0, source, 0, _buffer.size);
+			gpuCopyWritten(source);
+			gpuBufferDestination(_buffer);
+			restore(); beginBatch();
+			for (uint32_t offset = 0; offset < _buffer.size;)
+			{
+				const uint32_t bytes = bx::min<uint32_t>(_buffer.size-offset, 8192*8192);
+				const uint32_t width = bx::min<uint32_t>(2048, bx::alignUp((bytes+3)/4, 64));
+				GX2Texture input = {};
+				input.surface = transferLinear(GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, width, (bytes+width*4-1)/(width*4));
+				input.surface.image = (uint8_t*)source->data+offset;
+				input.viewNumMips = input.viewNumSlices = 1;
+				input.compMap = _index && !(_buffer.flags & BGFX_BUFFER_INDEX32) ? GX2_COMP_MAP(1, 0, 3, 2) : GX2_COMP_MAP(3, 2, 1, 0);
+				GX2InitTextureRegs(&input);
+				GX2ColorBuffer dest = {}; dest.surface = input.surface;
+				dest.surface.image = (uint8_t*)_buffer.block->data+offset;
+				dest.viewNumSlices = 1; GX2InitColorBufferRegs(&dest);
+				const float params[4] = {1.0f/width, 1.0f/input.surface.height, 0, 0};
+				fullscreen(m_programs[m_mipGen->m_program[0].idx], input, &dest, NULL, width, input.surface.height, params);
+				offset += bytes;
+			}
+			endBatch(); _buffer.littleEndian = true; gpuBufferWritten(_buffer); retire(source);
+		}
+
+		// A float4 intermediate needs a real format conversion at the imageStore
+		// boundary. The compiler has already rounded stores to the image format.
+		void computeImageConvert(Texture& _texture, const Binding& _bind, GX2Surface _linear, uint32_t _layer, bool _toExport)
+		{
+			GX2Texture input = {};
+			GX2ColorBuffer dest = {};
+			uint32_t program = 0;
+			if (_toExport)
+			{
+				input = _texture.texture;
+				input.viewFirstMip = _bind.m_firstMip; input.viewNumMips = 1;
+				input.viewFirstSlice = _bind.m_firstLayer+_layer; input.viewNumSlices = 1;
+				const bool volume = input.surface.dim == GX2_SURFACE_DIM_TEXTURE_3D;
+				const bool array = input.surface.dim != GX2_SURFACE_DIM_TEXTURE_2D && !volume;
+				if (input.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE)
+				{
+					input = cubeArrayView(_texture); input.viewFirstMip = _bind.m_firstMip;
+					input.viewNumMips = 1; input.viewFirstSlice = _bind.m_firstLayer+_layer; input.viewNumSlices = 1;
+				}
+				program = volume ? 2 : array ? 1 : 0;
+				dest.surface = _linear;
+			}
+			else
+			{
+				input.surface = _linear; input.viewNumMips = input.viewNumSlices = 1;
+				input.compMap = GX2_COMP_MAP(0, 1, 2, 3);
+				dest.surface = _texture.texture.surface; dest.viewMip = _bind.m_firstMip;
+				dest.viewFirstSlice = _bind.m_firstLayer+_layer;
+			}
+			GX2InitTextureRegs(&input); dest.viewNumSlices = 1; GX2InitColorBufferRegs(&dest);
+			const uint32_t depth = bx::max(1u, _texture.texture.surface.depth >> _bind.m_firstMip);
+			const float params[4] = {1.0f/_linear.width, 1.0f/_linear.height, (float(_bind.m_firstLayer+_layer)+0.5f)/depth, 0};
+			fullscreen(m_programs[m_mipGen->m_program[program].idx], input, &dest, NULL, _linear.width, _linear.height, params);
+		}
+
+		void computeSampled(const Binding& _bind, uint32_t _unit, const float _palette[][4])
+		{
+			Texture& texture = m_textures[_bind.m_idx];
+			GX2Texture view = texture.texture;
+			const Shader& shader = *m_boundProgram->compute;
+			const uint8_t dimension = shader.samplerDimensions[_unit];
+			if (view.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && dimension == TextureDimension::Dimension2DArray+1) view = cubeArrayView(texture);
+			view.viewFirstMip = _bind.m_firstMip;
+			view.viewNumMips = _bind.m_type == Binding::Image ? 1 : bx::min<uint32_t>(_bind.m_numMips, view.surface.mipLevels-view.viewFirstMip);
+			const uint32_t faces = view.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && _bind.m_type == Binding::Texture ? 6 : 1;
+			view.viewFirstSlice = uint32_t(_bind.m_firstLayer)*faces;
+			view.viewNumSlices = bx::min<uint32_t>(uint32_t(_bind.m_numLayers)*faces, view.surface.depth-view.viewFirstSlice);
+			if (_bind.m_type == Binding::Image) view.surface.format = textureFormat(TextureFormat::Enum(_bind.m_format), false, view.compMap);
+			const uint32_t flags = _bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? uint32_t(texture.flags) : _bind.m_samplerFlags;
+			if (_bind.m_type == Binding::Texture && (texture.flags & BGFX_TEXTURE_SRGB_MUTABLE)) view.surface.format = textureFormat(texture.format, 0 != (flags & BGFX_SAMPLER_SRGB), view.compMap);
+			GX2InitTextureRegs(&view); GX2SetComputeTexture(&view, _unit);
+			static const GX2TexClampMode clamps[] = { GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_CLAMP_MODE_MIRROR, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_CLAMP_MODE_CLAMP_BORDER };
+			GX2Sampler sampler;
+			GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+			GX2InitSamplerClamping(&sampler, clamps[(flags & BGFX_SAMPLER_U_MASK) >> BGFX_SAMPLER_U_SHIFT], clamps[(flags & BGFX_SAMPLER_V_MASK) >> BGFX_SAMPLER_V_SHIFT], clamps[(flags & BGFX_SAMPLER_W_MASK) >> BGFX_SAMPLER_W_SHIFT]);
+			const bool integer = (uint32_t(view.surface.format) & 0x300) == 0x100 || (uint32_t(view.surface.format) & 0x300) == 0x300;
+			GX2InitSamplerXYFilter(&sampler, integer || (flags & BGFX_SAMPLER_MAG_POINT) ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
+				integer || (flags & BGFX_SAMPLER_MIN_POINT) ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
+				flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? m_anisotropy : GX2_TEX_ANISO_RATIO_NONE);
+			GX2InitSamplerZMFilter(&sampler, integer || (flags & BGFX_SAMPLER_MIN_POINT) ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR,
+				view.viewNumMips <= 1 ? GX2_TEX_MIP_FILTER_MODE_NONE : integer || (flags & BGFX_SAMPLER_MIP_POINT) ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
+			const float maxLod = float(view.viewNumMips-1);
+			GX2InitSamplerLOD(&sampler, _bind.m_type == Binding::Image ? 0 : bx::min(maxLod, float(_bind.m_lod.min)*0.25f),
+				_bind.m_type == Binding::Image || _bind.m_lod.max == UINT8_MAX ? maxLod : bx::min(maxLod, float(_bind.m_lod.max)*0.25f), 0);
+			GX2InitSamplerDepthCompare(&sampler, s_compare[(flags & BGFX_SAMPLER_COMPARE_MASK) >> BGFX_SAMPLER_COMPARE_SHIFT]);
+			GX2InitSamplerBorderType(&sampler, GX2_TEX_BORDER_TYPE_VARIABLE);
+			const float* color = _palette[(flags & BGFX_SAMPLER_BORDER_COLOR_MASK) >> BGFX_SAMPLER_BORDER_COLOR_SHIFT];
+			const bool border = (flags & BGFX_SAMPLER_U_MASK) == BGFX_SAMPLER_U_BORDER
+				|| (flags & BGFX_SAMPLER_V_MASK) == BGFX_SAMPLER_V_BORDER || (flags & BGFX_SAMPLER_W_MASK) == BGFX_SAMPLER_W_BORDER;
+			if (border && (!(m_borderValid[0] & (1u << _unit)) || bx::memCmp(m_borderColors[0][_unit], color, 16)))
+			{
+				GX2SetComputeSamplerBorderColor(_unit, color[0], color[1], color[2], color[3]);
+				bx::memCopy(m_borderColors[0][_unit], color, 16); m_borderValid[0] |= 1u << _unit;
+			}
+			GX2SetComputeSampler(&sampler, _unit);
+			if (texture.image) touch(texture.image);
+		}
+
+		void dispatchCompute(Program& _program, const RenderCompute& _compute, const RenderBind& _bind, Block* _exports, const float _palette[][4], ViewState& _viewState, const Frame* _frame, uint16_t _view, const View& _renderView)
+		{
+			if (isValid(_compute.m_indirectBuffer)) { unsupported("native indirect compute dispatch"); return; }
+			Shader& shader = *_program.compute;
+			std::vector<ComputeOutput> outputs;
+			computeLayout(shader, _bind, outputs);
+			// Canonical inputs must be materialized before entering compute mode.
+			for (uint32_t unit = 0; unit < 16; ++unit)
+			{
+				const Binding& bind = _bind.m_bind[unit];
+				if (bind.m_idx == kInvalidHandle) continue;
+				if (bind.m_type == Binding::Texture || bind.m_type == Binding::Image) resolveTexture(m_textures[bind.m_idx]);
+			}
+			for (const ComputeOutput& output : outputs)
+			{
+				const Binding& bind = _bind.m_bind[output.binding];
+				if (bind.m_type != Binding::Image)
+				{
+					Buffer& buffer = bind.m_type == Binding::IndexBuffer ? m_indexBuffers[bind.m_idx] : m_vertexBuffers[bind.m_idx];
+					computeBufferNative(buffer, bind.m_type == Binding::IndexBuffer);
+					gpuCopyBytes(buffer.block, bind.m_offset, _exports, output.offset, output.size);
+				}
+				else
+				{
+					Texture& texture = m_textures[bind.m_idx];
+					const bool convert = output.surface.format != texture.texture.surface.format;
+					if (convert) { restore(); beginBatch(); }
+					for (uint32_t layer = 0; layer < output.layers; ++layer)
+					{
+						GX2Surface dest = output.surface; dest.image = (uint8_t*)_exports->data+output.offset+layer*dest.imageSize;
+						if (convert) computeImageConvert(texture, bind, dest, layer, true);
+						else GX2CopySurface(&texture.texture.surface, bind.m_firstMip, bind.m_firstLayer+layer, &dest, 0, 0);
+					}
+					if (convert) endBatch();
+				}
+			}
+			// All seed copies precede the producer. No CPU writeback of export bytes.
+			if (!outputs.empty()) GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _exports->data, _exports->size);
+			GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
+			GX2SetComputeShader((const GX2ComputeShader*)shader.header->data);
+			m_boundProgram = &_program;
+			for (uint32_t unit = 0; unit < 16; ++unit)
+			{
+				const Binding& bind = _bind.m_bind[unit];
+				if (bind.m_idx == kInvalidHandle) continue;
+				if (bind.m_type == Binding::Texture || bind.m_type == Binding::Image)
+				{
+					bool read = shader.samplerDimensions[unit] != 0;
+					for (const ComputeResource& resource : shader.resources) if (resource.binding == unit && resource.read) read = true;
+					if (read) computeSampled(bind, unit, _palette);
+				}
+				else if (shader.rawSrvMask & (1u << unit)) readonlyBuffer(bind, unit);
+			}
+			Block* layout = allocate(512, 256);
+			bx::memSet(layout->data, 0, 512);
+			for (const ComputeOutput& output : outputs)
+			{
+				uint32_t* entry = (uint32_t*)layout->data+output.binding*8;
+				entry[0] = bx::toLittleEndian(output.offset/4); entry[1] = bx::toLittleEndian(output.size/4);
+				if (output.surface.width)
+				{
+					const uint32_t element = output.elementBytes;
+					entry[2] = bx::toLittleEndian(output.surface.pitch*element/4);
+					entry[3] = bx::toLittleEndian(output.surface.imageSize/4);
+					entry[4] = bx::toLittleEndian(output.surface.width); entry[5] = bx::toLittleEndian(output.surface.height); entry[6] = bx::toLittleEndian(output.layers);
+				}
+			}
+			GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), layout->data, 512);
+			GX2SetComputeUniformBlock(15, 512, layout->data); retire(layout);
+			const GX2ComputeShader* native = (const GX2ComputeShader*)shader.header->data;
+			if (shader.uniformSize)
+			{
+				Block* uniform = allocate(shader.uniformSize, 256);
+				for (uint32_t ii = 0; ii < native->initialValueCount; ++ii) writeFloats((uint8_t*)uniform->data+native->initialValues[ii].offset*4, native->initialValues[ii].value, 4);
+				for (const Uniform& binding : shader.uniforms)
+				{
+					uint8_t* dst = (uint8_t*)uniform->data+binding.offset*4;
+					const float* src = (const float*)m_uniforms[binding.handle.idx];
+					if (binding.type == UniformType::Mat3)
+						for (uint32_t ii = 0; ii < uint32_t(binding.count)*3; ++ii) writeFloats(dst+ii*16, src+ii*3, 3);
+					else writeFloats(dst, src, binding.rows*4);
+				}
+				m_stageData[0] = (uint8_t*)uniform->data;
+				_viewState.setPredefined<4>(this, _view, _renderView, _program, _frame, _compute);
+				GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), uniform->data, shader.uniformSize);
+				GX2SetComputeUniformBlock(0, shader.uniformSize, uniform->data); retire(uniform);
+			}
+			Block* params = allocate(sizeof(GX2DispatchParams), GX2_DISPATCH_PARAMS_ALIGNMENT);
+			GX2DispatchParams* dispatch = (GX2DispatchParams*)params->data;
+			// The native command always launches 64 lanes per physical group. The
+			// compiler folds adjacent waves into independent logical groups and
+			// recovers the original X count from RID147 using this same factor.
+			const uint32_t waves = (native->workGroupSizeX*native->workGroupSizeY*native->workGroupSizeZ+63)/64;
+			dispatch->groupCountX = _compute.m_numX*waves; dispatch->groupCountY = _compute.m_numY; dispatch->groupCountZ = _compute.m_numZ; dispatch->padding = 0;
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU, params->data, sizeof(*dispatch));
+			GX2DispatchCompute(dispatch); retire(params);
+			touch(shader.header); touch(shader.program);
+			// Export publication belongs to this producer, before any copy, sampled
+			// alias or attribute reader. The stable region may be reused afterward.
+			for (const ComputeOutput& output : outputs)
+			{
+				void* data = (uint8_t*)_exports->data+output.offset;
+				GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, data, output.size);
+				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, data, output.size);
+			}
+			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+			for (const ComputeOutput& output : outputs)
+			{
+				const Binding& bind = _bind.m_bind[output.binding];
+				if (bind.m_type != Binding::Image)
+				{
+					Buffer& buffer = bind.m_type == Binding::IndexBuffer ? m_indexBuffers[bind.m_idx] : m_vertexBuffers[bind.m_idx];
+					gpuCopyBytes(_exports, output.offset, buffer.block, bind.m_offset, output.size);
+					gpuBufferWritten(buffer);
+				}
+				else
+				{
+					Texture& texture = m_textures[bind.m_idx];
+					const bool convert = output.surface.format != texture.texture.surface.format;
+					if (convert) { restore(); beginBatch(); }
+					for (uint32_t layer = 0; layer < output.layers; ++layer)
+					{
+						GX2Surface source = output.surface; source.image = (uint8_t*)_exports->data+output.offset+layer*source.imageSize;
+						if (convert) computeImageConvert(texture, bind, source, layer, false);
+						else GX2CopySurface(&source, 0, 0, &texture.texture.surface, bind.m_firstMip, bind.m_firstLayer+layer);
+					}
+					if (convert) endBatch();
+					transferWritten(texture, bind.m_firstMip, bind.m_firstLayer, output.layers);
+				}
+			}
+			if (_exports) touch(_exports);
+		}
+
 		void submit(Frame* _render, const ClearQuad& _clearQuad, const MipGen& _mipGen, TextVideoMemBlitter& _blitter) override
 		{
 			m_mipGen = &_mipGen; m_transferFrame = _render->m_frameNum; transferPublish();
@@ -3003,6 +3370,17 @@ namespace bgfx { namespace gx2
 			if (_render->m_iboffset) update(m_indexBuffers[_render->m_transientIb->handle.idx], 0, _render->m_iboffset, _render->m_transientIb->data, false, true);
 			if (_render->m_vboffset) update(m_vertexBuffers[_render->m_transientVb->handle.idx], 0, _render->m_vboffset, _render->m_transientVb->data, true, true);
 			_render->sort();
+			uint32_t exportBytes = 0;
+			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
+			{
+				SortKey key;
+				if (!key.decode(_render->m_sortKeys[item], _render->m_viewRemap)) continue;
+				const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
+				std::vector<ComputeOutput> outputs;
+				exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
+			}
+			Block* exports = exportBytes ? gpuBufferAllocate(exportBytes) : NULL;
+			if (exports) DCInvalidateRange(exports->data, exports->size);
 			BlitState blits(_render);
 			UniformCacheState ucs(_render);
 			ViewState viewState(_render);
@@ -3011,7 +3389,7 @@ namespace bgfx { namespace gx2
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 			{
 				SortKey key;
-				if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap)) { unsupported("compute dispatch"); continue; }
+				const bool compute = key.decode(_render->m_sortKeys[item], _render->m_viewRemap);
 				const View& renderView = _render->view(key.m_view);
 				if (!frameBufferAvailable(renderView.m_fbh)) continue;
 				if (view != key.m_view)
@@ -3034,6 +3412,23 @@ namespace bgfx { namespace gx2
 					}
 					viewState.setView(renderView); viewState.m_rect = renderView.m_rect;
 					viewport(renderView); clear(renderView, _clearQuad, _render->m_colorPalette);
+				}
+				if (compute)
+				{
+					const RenderCompute& dispatch = _render->m_renderItem[_render->m_sortValues[item]].compute;
+					if (dispatch.m_uniformBegin < dispatch.m_uniformEnd)
+						rendererUpdateUniforms(this, _render->m_uniformBuffer[dispatch.m_uniformIdx], dispatch.m_uniformBegin, dispatch.m_uniformEnd);
+					if (_render->m_debug & BGFX_DEBUG_IFH) continue;
+					endBatch(); finishRenderPass();
+					if (exports && (m_boundExportData != exports->data || m_boundExportSize != exports->size))
+					{
+						GX2SetShaderExportBuffer(exports->data, exports->size);
+						m_boundExportData = exports->data; m_boundExportSize = exports->size;
+					}
+					dispatchCompute(m_programs[key.m_program.idx], dispatch, _render->m_renderBind[dispatch.m_bindIdx], exports, _render->m_colorPalette, viewState, _render, view, renderView);
+					++stats.numCompute;
+					restore(); bindFrameBuffer(m_currentFrameBuffer); viewport(renderView); beginBatch();
+					continue;
 				}
 				const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
 				if (0 == draw.m_streamMask) continue; // touch still executes the view clear; vertex-ID draws use UINT32_MAX
@@ -3086,7 +3481,7 @@ namespace bgfx { namespace gx2
 					Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
 					const uint32_t indexSize = buffer.flags & BGFX_BUFFER_INDEX32 ? 4 : 2;
 					count = draw.m_numIndices == UINT32_MAX ? buffer.size/indexSize-draw.m_startIndex : draw.m_numIndices;
-					GX2DrawIndexedEx(primitive, count, indexSize == 4 ? GX2_INDEX_TYPE_U32 : GX2_INDEX_TYPE_U16,
+					GX2DrawIndexedEx(primitive, count, indexSize == 4 ? (buffer.littleEndian ? GX2_INDEX_TYPE_U32_LE : GX2_INDEX_TYPE_U32) : (buffer.littleEndian ? GX2_INDEX_TYPE_U16_LE : GX2_INDEX_TYPE_U16),
 						(uint8_t*)buffer.block->data+draw.m_startIndex*indexSize, 0, draw.m_numInstances);
 					touch(buffer.block);
 				}
@@ -3108,6 +3503,7 @@ namespace bgfx { namespace gx2
 				static const uint8_t divisor[] = {3, 1, 2, 1, 1}, subtract[] = {0, 2, 0, 1, 0};
 				stats.numPrims[topology] += (count/divisor[topology] > subtract[topology] ? count/divisor[topology]-subtract[topology] : 0)*draw.m_numInstances;
 			}
+			retire(exports);
 			endViewTimer(_render, viewTimer);
 			endBatch(); finishRenderPass(); transferRemainingBlits(blits);
 			if (frameBufferAvailable(_render->m_debugFrameBuffer) && (_render->m_debug & (BGFX_DEBUG_STATS | BGFX_DEBUG_IFH)))
@@ -3214,6 +3610,8 @@ namespace bgfx { namespace gx2
 		uint32_t m_sampleMask = UINT32_MAX;
 		uint64_t m_cachedState, m_cachedStencil;
 		uint32_t m_cachedRgba;
+		void* m_boundExportData = NULL;
+		uint32_t m_boundExportSize = 0;
 		Program* m_boundProgram = NULL;
 		Block* m_boundFetch = NULL;
 		const void* m_boundAttributes[BGFX_CONFIG_MAX_VERTEX_STREAMS];

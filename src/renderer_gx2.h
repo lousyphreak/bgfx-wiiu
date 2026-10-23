@@ -79,6 +79,7 @@ namespace bgfx { namespace gx2
 		uint32_t size = 0;
 		uint16_t flags = 0;
 		bool gpuWritten = false;
+		bool littleEndian = false; // Byte representation; a raw GPU copy can still carry CPU-endian words.
 		VertexLayoutHandle layout = BGFX_INVALID_HANDLE;
 	};
 
@@ -91,6 +92,18 @@ namespace bgfx { namespace gx2
 		uint8_t count;
 	};
 
+	struct ComputeResource
+	{
+		uint32_t binding, kind, format, elementBytes, read, write;
+	};
+
+	struct ComputeOutput
+	{
+		uint32_t binding, offset, size, elementBytes;
+		GX2Surface surface = {}; // One linear layer; layers occupy imageSize each.
+		uint32_t layers = 1;
+	};
+
 	struct Shader
 	{
 		Block* header = NULL;
@@ -100,6 +113,8 @@ namespace bgfx { namespace gx2
 		uint32_t uniformSize = 0;
 		uint32_t rawSrvMask = 0;
 		bool fragment = false;
+		bool compute = false;
+		std::vector<ComputeResource> resources;
 		uint8_t samplerDimensions[16] = {}; // TextureDimension + 1; zero is unused.
 	};
 
@@ -108,6 +123,7 @@ namespace bgfx { namespace gx2
 		uint32_t layouts[BGFX_CONFIG_MAX_VERTEX_STREAMS];
 		uint16_t instanceStride;
 		uint32_t streamMask;
+		uint32_t gpuEndianMask;
 		GX2FetchShader shader;
 		Block* program;
 	};
@@ -116,6 +132,7 @@ namespace bgfx { namespace gx2
 	{
 		Shader* vertex = NULL;
 		Shader* fragment = NULL;
+		Shader* compute = NULL;
 		std::vector<Fetch> fetches;
 		PredefinedUniform m_predefined[PredefinedUniform::Count*2];
 		uint16_t m_numPredefined = 0;
