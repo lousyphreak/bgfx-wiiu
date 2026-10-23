@@ -220,6 +220,9 @@ namespace bgfx { namespace gx2
 	{
 		RendererContextGX2(const Init& _init)
 		{
+			m_defaultVertex = allocate(16);
+			bx::memSet(m_defaultVertex->data, 0, 16);
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, m_defaultVertex->data, 16);
 			m_mainWindow.swapChain = _init.swapChain;
 			if (NULL == _init.swapChain.nwh)
 			{
@@ -2351,6 +2354,7 @@ namespace bgfx { namespace gx2
 			m_boundProgram = NULL;
 			m_boundFetch = NULL;
 			bx::memSet(m_boundAttributes, 0, sizeof(m_boundAttributes));
+			GX2SetAttribBuffer(BGFX_CONFIG_MAX_VERTEX_STREAMS+1, 16, 0, m_defaultVertex->data);
 			bx::memSet(m_boundTextures, 0, sizeof(m_boundTextures));
 			m_borderValid[0] = m_borderValid[1] = 0;
 
@@ -2532,7 +2536,15 @@ namespace bgfx { namespace gx2
 							attributes[count++] = stream; found = true;
 						}
 					}
-					if (!found) { unsupported("missing vertex attribute"); return; }
+					if (!found)
+					{
+						// Match bgfx's unbound attribute value without expanding vertex data.
+						GX2AttribStream stream = {};
+						stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS+1;
+						stream.format = GX2_ATTRIB_FORMAT_FLOAT_32; stream.type = GX2_ATTRIB_INDEX_PER_VERTEX;
+						stream.mask = GX2_SEL_MASK(4, 4, 4, 5);
+						attributes[count++] = stream;
+					}
 				}
 				Fetch native = {};
 				bx::memCopy(native.layouts, layouts, sizeof(layouts));
@@ -3615,6 +3627,7 @@ namespace bgfx { namespace gx2
 		uint32_t m_boundExportSize = 0;
 		Program* m_boundProgram = NULL;
 		Block* m_boundFetch = NULL;
+		Block* m_defaultVertex = NULL;
 		const void* m_boundAttributes[BGFX_CONFIG_MAX_VERTEX_STREAMS];
 		uint32_t m_boundStrides[BGFX_CONFIG_MAX_VERTEX_STREAMS];
 		const GX2Texture* m_boundTextures[16];
