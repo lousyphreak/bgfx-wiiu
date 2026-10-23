@@ -107,6 +107,7 @@ static bgfx::ShaderHandle loadShader(bx::FileReaderI* _reader, const bx::StringV
 	case bgfx::RendererType::Direct3D12: filePath.join("dxil");  break;
 	case bgfx::RendererType::Agc:
 	case bgfx::RendererType::Gnm:        filePath.join("pssl");  break;
+	case bgfx::RendererType::Gx2:        filePath.join("gx2");   break;
 	case bgfx::RendererType::Metal:      filePath.join("metal"); break;
 	case bgfx::RendererType::Nvn:        filePath.join("nvn");   break;
 	case bgfx::RendererType::OpenGL:     filePath.join("glsl");  break;
