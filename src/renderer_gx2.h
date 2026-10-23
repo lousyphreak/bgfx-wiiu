@@ -8,6 +8,7 @@
 #include <bgfx/platform_gx2.h>
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
+#include <coreinit/memorymap.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
 #include <gx2/displaylist.h>
@@ -97,6 +98,7 @@ namespace bgfx { namespace gx2
 		std::vector<Uniform> uniforms;
 		std::vector<PredefinedUniform> predefined;
 		uint32_t uniformSize = 0;
+		uint32_t rawSrvMask = 0;
 		bool fragment = false;
 		uint8_t samplerDimensions[16] = {}; // TextureDimension + 1; zero is unused.
 	};

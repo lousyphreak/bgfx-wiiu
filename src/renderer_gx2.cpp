@@ -249,7 +249,7 @@ namespace bgfx { namespace gx2
 			g_caps.limits.maxVertexStreams = BGFX_CONFIG_MAX_VERTEX_STREAMS;
 			g_caps.limits.maxVertexAttributes = 32;
 			g_caps.limits.maxTextureSamplers = 16;
-			g_caps.limits.maxComputeBindings = 0;
+			g_caps.limits.maxComputeBindings = 16;
 			g_caps.limits.maxBlits = BGFX_CONFIG_MAX_BLIT_ITEMS;
 			g_caps.limits.blitRowPitchAlign = 1024;
 			g_caps.limits.blitOffsetAlign = 256;
@@ -457,7 +457,9 @@ namespace bgfx { namespace gx2
 			// A preserved rename wrote the whole buffer; otherwise only this range was
 			// CPU-written. CPU publication must never run on GPU-owned stale contents.
 			const bool whole = rename && preserve;
-			GX2Invalidate(_vertex ? GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER : GX2_INVALIDATE_MODE_CPU,
+			const GX2InvalidateMode consumer = GX2InvalidateMode((_vertex ? GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER : GX2_INVALIDATE_MODE_CPU)
+				| (_buffer.flags & BGFX_BUFFER_COMPUTE_READ ? GX2_INVALIDATE_MODE_TEXTURE : 0));
+			GX2Invalidate(consumer,
 				(uint8_t*)_buffer.block->data+(whole ? 0 : _offset), whole ? _buffer.size : _size);
 		}
 
@@ -777,7 +779,8 @@ namespace bgfx { namespace gx2
 			shader.fragment = isShaderType(magic, 'F');
 			if (!shader.fragment && !isShaderType(magic, 'V')) { unsupported("compute shaders"); return; }
 			readLE(ptr, 4); readLE(ptr, 4); // interface hashes
-			readLE(ptr, 4); readLE(ptr, 4); // raw masks (zero in GX2 profile)
+			shader.rawSrvMask = readLE(ptr, 4);
+			if (readLE(ptr, 4)) unsupported("writable shader buffers");
 			const uint16_t count = uint16_t(readLE(ptr, 2));
 			for (uint32_t ii = 0; ii < count; ++ii)
 			{
@@ -844,7 +847,7 @@ namespace bgfx { namespace gx2
 		{
 			Shader& shader = m_shaders[_handle.idx];
 			retire(shader.program); retire(shader.header);
-			shader.uniforms.clear(); shader.predefined.clear(); shader.uniformSize = 0;
+			shader.uniforms.clear(); shader.predefined.clear(); shader.uniformSize = 0; shader.rawSrvMask = 0;
 			bx::memSet(shader.samplerDimensions, 0, sizeof(shader.samplerDimensions));
 		}
 
@@ -2487,6 +2490,38 @@ namespace bgfx { namespace gx2
 			}
 		}
 
+		void readonlyBuffer(const Binding& _bind, uint32_t _unit)
+		{
+			if ((_bind.m_type != Binding::VertexBuffer && _bind.m_type != Binding::IndexBuffer)
+			|| _bind.m_access != Access::Read) { unsupported("writable or non-buffer raw bindings"); return; }
+			const bool index = _bind.m_type == Binding::IndexBuffer;
+			Buffer& buffer = index ? m_indexBuffers[_bind.m_idx] : m_vertexBuffers[_bind.m_idx];
+			const uint32_t offset = bx::min(_bind.m_offset, buffer.size);
+			const uint32_t size = bx::min(_bind.m_size, buffer.size-offset);
+			// update() and gpuBufferWritten() publish once at the producer boundary.
+			const uint32_t endian = index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
+			alignas(64) uint32_t commands[] = {
+				bx::toLittleEndian(UINT32_C(0xc0076900)), // SET_RESOURCE, register + 7 words
+				0,
+				bx::toLittleEndian(OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data))+offset)),
+				bx::toLittleEndian(size-1),
+				bx::toLittleEndian((4u << 8) | (13u << 20) | (1u << 26) | (endian << 30)),
+				bx::toLittleEndian(1u), 0, 0, bx::toLittleEndian(UINT32_C(0xc0000000)),
+			};
+			if (m_boundProgram->vertex->rawSrvMask & (1u << _unit))
+			{
+				commands[1] = bx::toLittleEndian(0x460u+7*_unit);
+				GX2CopyDisplayList(commands, sizeof(commands));
+			}
+			if (m_boundProgram->fragment->rawSrvMask & (1u << _unit))
+			{
+				commands[1] = bx::toLittleEndian(7*_unit);
+				GX2CopyDisplayList(commands, sizeof(commands));
+			}
+			m_boundTextures[_unit] = NULL; // A later texture must replace this descriptor.
+			touch(buffer.block);
+		}
+
 		void textures(const RenderBind& _bind, const float _palette[][4])
 		{
 			static const GX2TexClampMode clamps[] = { GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_CLAMP_MODE_MIRROR, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_CLAMP_MODE_CLAMP_BORDER };
@@ -2494,6 +2529,11 @@ namespace bgfx { namespace gx2
 			{
 				const Binding& bind = _bind.m_bind[ii];
 				if (bind.m_idx == kInvalidHandle) continue;
+				if ((m_boundProgram->vertex->rawSrvMask | m_boundProgram->fragment->rawSrvMask) & (1u << ii))
+				{
+					readonlyBuffer(bind, ii);
+					continue;
+				}
 				if (bind.m_type != Binding::Texture) { unsupported("image and compute bindings"); continue; }
 				Texture& texture = m_textures[bind.m_idx];
 				const uint32_t flags = bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? uint32_t(texture.flags) : bind.m_samplerFlags;
