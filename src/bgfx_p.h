@@ -514,8 +514,8 @@ namespace bgfx
 
 	inline void readRawBindings(bx::ReaderI* _reader, uint32_t& _srvMask, uint32_t& _uavMask, bx::Error* _err)
 	{
-		bx::read(_reader, _srvMask, _err);
-		bx::read(_reader, _uavMask, _err);
+		bx::readHE(_reader, _srvMask, true, _err);
+		bx::readHE(_reader, _uavMask, true, _err);
 	}
 
 	const char* getShaderTypeName(uint32_t _magic);
@@ -7188,7 +7188,7 @@ namespace bgfx
 			bx::Error err;
 
 			uint32_t magic;
-			bx::read(&reader, magic, &err);
+			bx::readHE(&reader, magic, true, &err);
 
 			if (!err.isOk() )
 			{
@@ -7237,7 +7237,7 @@ namespace bgfx
 			}
 
 			uint32_t hashIn;
-			bx::read(&reader, hashIn, &err);
+			bx::readHE(&reader, hashIn, true, &err);
 
 			uint32_t hashOut;
 
@@ -7247,7 +7247,7 @@ namespace bgfx
 			}
 			else
 			{
-				bx::read(&reader, hashOut, &err);
+				bx::readHE(&reader, hashOut, true, &err);
 			}
 
 			{
@@ -7257,7 +7257,7 @@ namespace bgfx
 			}
 
 			uint16_t count;
-			bx::read(&reader, count, &err);
+			bx::readHE(&reader, count, true, &err);
 
 			if (!err.isOk() )
 			{
@@ -7307,10 +7307,10 @@ namespace bgfx
 				bx::read(&reader, num, &err);
 
 				uint16_t regIndex;
-				bx::read(&reader, regIndex, &err);
+				bx::readHE(&reader, regIndex, true, &err);
 
 				uint16_t regCount;
-				bx::read(&reader, regCount, &err);
+				bx::readHE(&reader, regCount, true, &err);
 
 				uint8_t texComponent = 0;
 				uint8_t texDimension = 0;
@@ -7325,7 +7325,7 @@ namespace bgfx
 				if (!isShaderVerLess(magic, 10) )
 				{
 					uint16_t texFormat = 0;
-					bx::read(&reader, texFormat, &err);
+					bx::readHE(&reader, texFormat, true, &err);
 				}
 
 				PredefinedUniform::Enum predefined = nameToPredefinedUniformEnum(name);

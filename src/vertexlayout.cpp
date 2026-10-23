@@ -296,7 +296,7 @@ namespace bgfx
 		}
 
 		total += bx::write(_writer, numAttrs, _err);
-		total += bx::write(_writer, _layout.m_stride, _err);
+		total += bx::writeLE(_writer, _layout.m_stride, _err);
 
 		for (uint32_t attr = 0; attr < Attrib::Count; ++attr)
 		{
@@ -307,10 +307,10 @@ namespace bgfx
 				bool normalized;
 				bool asInt;
 				_layout.decode(Attrib::Enum(attr), num, type, normalized, asInt);
-				total += bx::write(_writer, _layout.m_offset[attr], _err);
-				total += bx::write(_writer, s_attribToId[attr].id, _err);
+				total += bx::writeLE(_writer, _layout.m_offset[attr], _err);
+				total += bx::writeLE(_writer, s_attribToId[attr].id, _err);
 				total += bx::write(_writer, num, _err);
-				total += bx::write(_writer, s_attribTypeToId[type].id, _err);
+				total += bx::writeLE(_writer, s_attribTypeToId[type].id, _err);
 				total += bx::write(_writer, normalized, _err);
 				total += bx::write(_writer, asInt, _err);
 			}
@@ -329,7 +329,7 @@ namespace bgfx
 		total += bx::read(_reader, numAttrs, _err);
 
 		uint16_t stride;
-		total += bx::read(_reader, stride, _err);
+		total += bx::readHE(_reader, stride, true, _err);
 
 		if (!_err->isOk() )
 		{
@@ -341,16 +341,16 @@ namespace bgfx
 		for (uint32_t ii = 0; ii < numAttrs; ++ii)
 		{
 			uint16_t offset;
-			total += bx::read(_reader, offset, _err);
+			total += bx::readHE(_reader, offset, true, _err);
 
 			uint16_t attribId = 0;
-			total += bx::read(_reader, attribId, _err);
+			total += bx::readHE(_reader, attribId, true, _err);
 
 			uint8_t num;
 			total += bx::read(_reader, num, _err);
 
 			uint16_t attribTypeId;
-			total += bx::read(_reader, attribTypeId, _err);
+			total += bx::readHE(_reader, attribTypeId, true, _err);
 
 			bool normalized;
 			total += bx::read(_reader, normalized, _err);

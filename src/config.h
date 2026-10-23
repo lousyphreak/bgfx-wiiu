@@ -284,9 +284,9 @@
 
 /// Enable/disable multithreaded rendering. When enabled, bgfx can use a
 /// separate render thread for GPU submission. Default is 1 on all platforms
-/// that support threading (0 on Emscripten).
+/// that support threading (0 on Emscripten and the initial Wii U profile).
 #ifndef BGFX_CONFIG_MULTITHREADED
-#	define BGFX_CONFIG_MULTITHREADED ( (0 == BX_PLATFORM_EMSCRIPTEN) ? 1 : 0)
+#	define BGFX_CONFIG_MULTITHREADED ( !(BX_PLATFORM_EMSCRIPTEN || BX_PLATFORM_WIIU) ? 1 : 0)
 #endif // BGFX_CONFIG_MULTITHREADED
 
 /// Maximum number of draw/compute calls per frame. Default is 65535 (64K - 1).
