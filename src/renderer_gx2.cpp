@@ -230,7 +230,7 @@ namespace bgfx { namespace gx2
 				GX2SetupContextStateEx(m_headlessContext, TRUE);
 				m_context = m_headlessContext;
 			}
-			g_caps.supported = BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
+			g_caps.supported = BGFX_CAPS_COMPUTE | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -249,6 +249,10 @@ namespace bgfx { namespace gx2
 						g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_MSAA | BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X2 | BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X4 | BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X8;
 					if (MipGen::isSupported(format)) g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_MIP_AUTOGEN;
 				}
+				if (format == TextureFormat::R8 || format == TextureFormat::RG8 || format == TextureFormat::RGBA8
+				|| format == TextureFormat::R16F || format == TextureFormat::R32F || format == TextureFormat::RGBA16F
+				|| format == TextureFormat::RGBA32F || format == TextureFormat::R32U || format == TextureFormat::RGBA32U)
+					g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_IMAGE_READ | BGFX_CAPS_FORMAT_TEXTURE_IMAGE_WRITE;
 				if (format == TextureFormat::RGBA8 || format == TextureFormat::BGRA8 || (format >= TextureFormat::BC1 && format <= TextureFormat::BC3))
 					g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_2D_SRGB | BGFX_CAPS_FORMAT_TEXTURE_3D_SRGB | BGFX_CAPS_FORMAT_TEXTURE_CUBE_SRGB;
 			}

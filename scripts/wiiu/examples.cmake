@@ -116,7 +116,7 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
 
     # Graphics assets are universal; native compute assets are selected explicitly.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
-    if(example MATCHES "^(46-fsr|48-drawindirect|53-sky2)$")
+    if(example MATCHES "^(08-update|46-fsr|48-drawindirect|53-sky2)$")
         file(GLOB compute_sources CONFIGURE_DEPENDS "${example_dir}/cs_*.sc")
         list(APPEND shader_sources ${compute_sources})
     endif()
