@@ -1,9 +1,9 @@
 # Original bgfx applications, sharing one SDL3/GX2 entry implementation.
 find_package(SDL3 REQUIRED CONFIG)
 set(BGFX_WIIU_EXAMPLES
-    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky"
+    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky;38-bloom;40-svt;42-bunnylod;43-denoise;44-sss;45-bokeh;47-pixelformats;49-hextile;50-headless;51-gpufont"
     CACHE STRING "Numbered example directories to build")
-if("25-c99" IN_LIST BGFX_WIIU_EXAMPLES)
+if("25-c99" IN_LIST BGFX_WIIU_EXAMPLES OR "42-bunnylod" IN_LIST BGFX_WIIU_EXAMPLES)
     enable_language(C)
 endif()
 set(common_dir "${BGFX_DIR}/examples/common")
@@ -40,9 +40,12 @@ if("10-font" IN_LIST BGFX_WIIU_EXAMPLES OR "11-fontsdf" IN_LIST BGFX_WIIU_EXAMPL
         ${common_dir}/cube_atlas.cpp
         ${common_dir}/font/font_manager.cpp
         ${common_dir}/font/text_buffer_manager.cpp
-        ${common_dir}/font/text_metrics.cpp
-        ${common_dir}/font/utf8.cpp)
+        ${common_dir}/font/text_metrics.cpp)
     list(APPEND embedded_families font)
+endif()
+if("10-font" IN_LIST BGFX_WIIU_EXAMPLES OR "11-fontsdf" IN_LIST BGFX_WIIU_EXAMPLES
+        OR "51-gpufont" IN_LIST BGFX_WIIU_EXAMPLES)
+    target_sources(example-common PRIVATE ${common_dir}/font/utf8.cpp)
 endif()
 if("20-nanovg" IN_LIST BGFX_WIIU_EXAMPLES)
     target_sources(example-common PRIVATE
@@ -114,13 +117,13 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         BYPRODUCTS "${package_dir}/code/${example}.rpx"
         VERBATIM)
 
-    # GX2 exposes graphics stages only; examples gate optional compute on caps.
+    # Graphics-stage assets; compute programs need compiler/backend implementation.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
     if(example STREQUAL "21-deferred")
         # The original application gates UAV programs on IMAGE_RW, absent on GX2.
         list(FILTER shader_sources EXCLUDE REGEX "_uav\\.sc$")
     endif()
-    if(example MATCHES "^(05-instancing|22-windows|26-occlusion|34-mvs|35-dynamic)$")
+    if(example MATCHES "^(05-instancing|22-windows|26-occlusion|34-mvs|35-dynamic|50-headless)$")
         list(APPEND shader_sources
             "${BGFX_DIR}/examples/01-cubes/vs_cubes.sc"
             "${BGFX_DIR}/examples/01-cubes/fs_cubes.sc")
