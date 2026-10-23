@@ -107,7 +107,7 @@ namespace bgfx
 
 		template<typename Shader>
 		bool writeStage(const Options& _options, const Shader& _shader, const std::string& _code,
-			const std::vector<uint8_t>& _gfd, bx::WriterI* _writer, bx::WriterI* _messages)
+			const std::vector<uint8_t>& _gfd, bx::WriterI* _writer, bx::WriterI* _messages, const GLSLComputeShader* _compute = NULL)
 		{
 			bx::ErrorAssert err;
 			UniformArray uniforms;
@@ -224,6 +224,15 @@ namespace bgfx
 				}
 				raw.srv |= 1u << uint32_t(strtoul(match[1].str().c_str(), NULL, 10));
 			}
+			if (_compute)
+			{
+				for (uint32_t ii = 0; ii < _compute->resourceCount; ++ii)
+				{
+					const GLSLComputeResource& resource = _compute->resources[ii];
+					if (resource.read) raw.srv |= 1u << resource.binding;
+					if (resource.write) raw.uav |= 1u << resource.binding;
+				}
+			}
 			raw.write(_writer, &err);
 			bx::writeLE(_writer, uint16_t(uniforms.size()), &err);
 			for (const Uniform& uniform : uniforms)
@@ -237,6 +246,22 @@ namespace bgfx
 				bx::write(_writer, uniform.texComponent, &err);
 				bx::write(_writer, uniform.texDimension, &err);
 				bx::writeLE(_writer, uniform.texFormat, &err);
+			}
+			if (_compute)
+			{
+				// Compute-only ABI extension before the native GFD payload.
+				bx::writeLE(_writer, uint32_t(0x31435347), &err); // GSC1
+				bx::writeLE(_writer, _compute->resourceCount, &err);
+				for (uint32_t ii = 0; ii < _compute->resourceCount; ++ii)
+				{
+					const GLSLComputeResource& r = _compute->resources[ii];
+					bx::writeLE(_writer, r.binding, &err);
+					bx::writeLE(_writer, r.kind, &err);
+					bx::writeLE(_writer, r.format, &err);
+					bx::writeLE(_writer, r.elementBytes, &err);
+					bx::writeLE(_writer, r.read, &err);
+					bx::writeLE(_writer, r.write, &err);
+				}
 			}
 			bx::writeLE(_writer, uint32_t(_gfd.size()), &err);
 			bx::write(_writer, _gfd.data(), int32_t(_gfd.size()), &err);
@@ -270,6 +295,18 @@ namespace bgfx
 		}
 		char diagnostics[16384] = {};
 		const GLSL_COMPILER_FLAG flags = _options.disasm ? GLSL_COMPILER_FLAG_PRINT_DISASSEMBLY_TO_STDERR : GLSL_COMPILER_FLAG_NONE;
+		if (_options.shaderType == 'c')
+		{
+			GLSLComputeShader* compute = NULL;
+			const GX2ShaderMode mode = CompileComputeShader(_code.c_str(), &compute, diagnostics, sizeof(diagnostics), flags);
+			std::unique_ptr<GLSLComputeShader, decltype(&FreeComputeShader)> cs(compute, FreeComputeShader);
+			bx::ErrorAssert err;
+			if (diagnostics[0] != '\0') bx::write(_messages, &err, "%s\n", diagnostics);
+			if (mode == GLSL_SHADER_MODE_ERROR) return false;
+			GFDFile file;
+			file.computeShaders.push_back(&compute->shader);
+			return writeStage(_options, compute->shader, declarations, SerializeGFD(file), _writer, _messages, compute);
+		}
 		GX2VertexShader* vertex = NULL;
 		GX2PixelShader* pixel = NULL;
 		const GX2ShaderMode mode = _options.shaderType == 'v'

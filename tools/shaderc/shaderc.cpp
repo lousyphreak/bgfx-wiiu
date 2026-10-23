@@ -1219,11 +1219,6 @@ namespace bgfx
 		}
 
 		const Profile* profile = &s_profiles[profileId];
-		if (profile->lang == ShadingLang::Gx2 && _options.shaderType != 'v' && _options.shaderType != 'f')
-		{
-			bx::write(_messageWriter, &messageErr, "GX2 supports vertex and fragment shaders only.\n");
-			return false;
-		}
 
 		if (_options.uses16BitTypes
 		&&  profile->lang == ShadingLang::Dxil
@@ -1790,7 +1785,7 @@ namespace bgfx
 			}
 			else
 			{
-				if (profile->lang == ShadingLang::GLSL)
+				if (profile->lang == ShadingLang::GLSL || profile->lang == ShadingLang::Gx2)
 				{
 				}
 				else
@@ -1888,7 +1883,7 @@ namespace bgfx
 						bx::writeLE(_shaderWriter, uint32_t(0), &err);
 						bx::writeLE(_shaderWriter, outputHash, &err);
 
-						if (profile->lang == ShadingLang::GLSL)
+						if (profile->lang == ShadingLang::GLSL || profile->lang == ShadingLang::Gx2)
 						{
 							// Compute requires GLSL 4.30.
 							const uint32_t glsl_profile = bx::max<uint32_t>(profile->id, 430);
@@ -1906,7 +1901,9 @@ namespace bgfx
 							code += _comment;
 							code += preprocessor.m_preprocessed;
 
-							compiled = compileGLSLShader(_options
+							if (profile->lang == ShadingLang::Gx2)
+								compiled = compileGx2Shader(_options, profile->id, code, _shaderWriter, _messageWriter);
+							else compiled = compileGLSLShader(_options
 								, 0 != esslVersion ? (esslVersion | 0x80000000) : glsl_profile
 								, code
 								, _shaderWriter
