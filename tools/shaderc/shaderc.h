@@ -13,6 +13,10 @@ namespace bgfx
 
 #include <bx/bx.h>
 
+#ifndef SHADERC_CONFIG_HAS_CAFEGLSL
+#	define SHADERC_CONFIG_HAS_CAFEGLSL 0
+#endif
+
 // HLSL compilation support:
 // - Windows: Native D3DCompiler DLL
 // - Linux/macOS: d3d4linux (Wine-based D3DCompiler via IPC)
@@ -139,8 +143,8 @@ namespace bgfx
 
 		void write(bx::WriterI* _writer, bx::Error* _err) const
 		{
-			bx::write(_writer, srv, _err);
-			bx::write(_writer, uav, _err);
+			bx::writeLE(_writer, srv, _err);
+			bx::writeLE(_writer, uav, _err);
 		}
 
 		uint32_t srv;
@@ -192,6 +196,7 @@ namespace bgfx
 	void writeFile(const char* _filePath, const void* _data, int32_t _size);
 
 	bool compileGLSLShader(const Options& _options, uint32_t _version, const std::string& _code, bx::WriterI* _writer, bx::WriterI* _messages);
+	bool compileGx2Shader(const Options& _options, uint32_t _version, const std::string& _code, bx::WriterI* _writer, bx::WriterI* _messages);
 	bool compileHLSLShader(const Options& _options, uint32_t _version, const std::string& _code, bx::WriterI* _writer, bx::WriterI* _messages);
 	bool compileDxilShader(const Options& _options, uint32_t _version, const std::string& _code, bx::WriterI* _writer, bx::WriterI* _messages);
 	bool compileMetalShader(const Options& _options, uint32_t _version, const std::string& _code, bx::WriterI* _writer, bx::WriterI* _messages);

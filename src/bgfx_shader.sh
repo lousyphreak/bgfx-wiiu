@@ -744,22 +744,27 @@ vec4  mod(vec4  _a, vec4  _b) { return _a - _b * floor(_a / _b); }
 #	define CONST(_x) const _x
 #	define atan2(_x, _y) atan(_x, _y)
 #	define saturate(_x) clamp(_x, 0.0, 1.0)
-#	define SAMPLER2D(_name, _reg)       uniform sampler2D _name
-#	define SAMPLER2DMS(_name, _reg)     uniform sampler2DMS _name
-#	define SAMPLER3D(_name, _reg)       uniform sampler3D _name
-#	define SAMPLERCUBE(_name, _reg)     uniform samplerCube _name
-#	define SAMPLER2DSHADOW(_name, _reg) uniform sampler2DShadow _name
+#	if BGFX_SHADER_LANGUAGE_GX2
+#		define BGFX_GLSL_BINDING(_reg) layout(binding = _reg)
+#	else
+#		define BGFX_GLSL_BINDING(_reg)
+#	endif
+#	define SAMPLER2D(_name, _reg)       BGFX_GLSL_BINDING(_reg) uniform sampler2D _name
+#	define SAMPLER2DMS(_name, _reg)     BGFX_GLSL_BINDING(_reg) uniform sampler2DMS _name
+#	define SAMPLER3D(_name, _reg)       BGFX_GLSL_BINDING(_reg) uniform sampler3D _name
+#	define SAMPLERCUBE(_name, _reg)     BGFX_GLSL_BINDING(_reg) uniform samplerCube _name
+#	define SAMPLER2DSHADOW(_name, _reg) BGFX_GLSL_BINDING(_reg) uniform sampler2DShadow _name
 
-#	define SAMPLER2DARRAY(_name, _reg)       uniform sampler2DArray _name
-#	define SAMPLER2DMSARRAY(_name, _reg)     uniform sampler2DMSArray _name
-#	define SAMPLERCUBEARRAY(_name, _reg)     uniform samplerCubeArray _name
-#	define SAMPLER2DARRAYSHADOW(_name, _reg) uniform sampler2DArrayShadow _name
-#	define SAMPLERCUBESHADOW(_name, _reg)    uniform samplerCubeShadow _name
+#	define SAMPLER2DARRAY(_name, _reg)       BGFX_GLSL_BINDING(_reg) uniform sampler2DArray _name
+#	define SAMPLER2DMSARRAY(_name, _reg)     BGFX_GLSL_BINDING(_reg) uniform sampler2DMSArray _name
+#	define SAMPLERCUBEARRAY(_name, _reg)     BGFX_GLSL_BINDING(_reg) uniform samplerCubeArray _name
+#	define SAMPLER2DARRAYSHADOW(_name, _reg) BGFX_GLSL_BINDING(_reg) uniform sampler2DArrayShadow _name
+#	define SAMPLERCUBESHADOW(_name, _reg)    BGFX_GLSL_BINDING(_reg) uniform samplerCubeShadow _name
 
-#	define ISAMPLER2D(_name, _reg) uniform isampler2D _name
-#	define USAMPLER2D(_name, _reg) uniform usampler2D _name
-#	define ISAMPLER3D(_name, _reg) uniform isampler3D _name
-#	define USAMPLER3D(_name, _reg) uniform usampler3D _name
+#	define ISAMPLER2D(_name, _reg) BGFX_GLSL_BINDING(_reg) uniform isampler2D _name
+#	define USAMPLER2D(_name, _reg) BGFX_GLSL_BINDING(_reg) uniform usampler2D _name
+#	define ISAMPLER3D(_name, _reg) BGFX_GLSL_BINDING(_reg) uniform isampler3D _name
+#	define USAMPLER3D(_name, _reg) BGFX_GLSL_BINDING(_reg) uniform usampler3D _name
 
 #	define texture2D(_sampler, _coord)      texture(_sampler, _coord)
 #	define texture2DProj(_sampler, _coord)  textureProj(_sampler, _coord)
@@ -965,7 +970,9 @@ uniform vec4 u_alphaRef4;
 #define u_alphaRef u_alphaRef4.x
 uniform mat4 u_model[BGFX_CONFIG_MAX_BONES];
 
-#if BGFX_SHADER_LANGUAGE_GLSL
+#if BGFX_SHADER_LANGUAGE_GX2
+#	define bgfx_ndc vec4(1.0, 0.0, 1.0, 1.0)
+#elif BGFX_SHADER_LANGUAGE_GLSL
 uniform vec4 bgfx_ndc;
 #endif // BGFX_SHADER_LANGUAGE_GLSL
 

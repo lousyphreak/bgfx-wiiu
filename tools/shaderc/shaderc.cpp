@@ -38,6 +38,7 @@ namespace bgfx
 			SpirV,
 			WGSL,
 			Dxil,
+			Gx2,
 
 			Count
 		};
@@ -53,6 +54,7 @@ namespace bgfx
 		"Standard Portable Intermediate Representation - V (SPIR-V)",
 		"WebGPU Shading Language (WGSL)",
 		"DirectX Intermediate Language (DXIL)",
+		"Wii U GX2 (CafeGLSL)",
 
 		"Unknown?!"
 	};
@@ -153,6 +155,7 @@ namespace bgfx
 		{  ShadingLang::GLSL,  430,    "430"        },
 		{  ShadingLang::GLSL,  440,    "440"        },
 		{  ShadingLang::WGSL,  1010,   "wgsl"       },
+		{  ShadingLang::Gx2,   430,    "gx2"        },
 	};
 
 	// To be use from vertex program require:
@@ -947,6 +950,67 @@ namespace bgfx
 	};
 
 	typedef std::vector<std::string> InOut;
+	static uint32_t gx2InterfaceSlots(const Varying& _var)
+	{
+		uint32_t slots = 1;
+		const size_t matrix = _var.m_type.find("mat");
+		if (matrix != std::string::npos)
+		{
+			slots = uint32_t(_var.m_type[matrix + 3] - '0');
+		}
+		for (size_t bracket = _var.m_name.find('['); bracket != std::string::npos; bracket = _var.m_name.find('[', bracket + 1))
+		{
+			slots *= uint32_t(strtoul(_var.m_name.c_str() + bracket + 1, NULL, 10));
+		}
+		return slots;
+	}
+
+	static void writeGx2Interfaces(Preprocessor& _preprocessor, const VaryingMap& _varyings,
+		const InOut& _inputs, const InOut& _outputs, char _stage)
+	{
+		std::vector<std::string> names;
+		for (const auto& entry : _varyings)
+		{
+			if (entry.first.compare(0, 2, "a_") != 0 && entry.first.compare(0, 2, "i_") != 0)
+			{
+				names.push_back(entry.first);
+			}
+		}
+		std::sort(names.begin(), names.end());
+		std::unordered_map<std::string, uint32_t> locations;
+		uint32_t location = 0;
+		for (const std::string& name : names)
+		{
+			locations[name] = location;
+			location += gx2InterfaceSlots(_varyings.at(name));
+		}
+		uint32_t attribute = 0;
+		auto emit = [&](const InOut& list, bool output)
+		{
+			for (const std::string& name : list)
+			{
+				const auto entry = _varyings.find(name);
+				if (entry == _varyings.end())
+				{
+					continue; // The GLSL compiler diagnoses an undeclared used input.
+				}
+				const Varying& var = entry->second;
+				const bool inputAttribute = !output && _stage == 'v';
+				const uint32_t slot = inputAttribute ? attribute : locations.at(name);
+				_preprocessor.writef("layout(location = %u) %s %s %s %s;\n", slot,
+					var.m_interpolation.c_str(), output ? "out" : "in", var.m_type.c_str(), var.m_name.c_str());
+				if (inputAttribute)
+				{
+					attribute += gx2InterfaceSlots(var);
+				}
+			}
+		};
+		emit(_inputs, false);
+		emit(_outputs, true);
+		_preprocessor.writef("#define shadow2D(_sampler, _coord) texture(_sampler, _coord)\n"
+			"#define shadow2DProj(_sampler, _coord) textureProj(_sampler, _coord)\n");
+	}
+
 
 	uint32_t parseInOut(InOut& _inout, const bx::StringView& _str)
 	{
@@ -1039,6 +1103,7 @@ namespace bgfx
 		                                                        "  linux\n"
 		                                                        "  orbis\n"
 		                                                        "  osx\n"
+		                                                        "  wiiu\n"
 		                                                        "  windows"                                                                       },
 		{ 'p',  "profile",                 1, "<profile>",      "Shader model. Defaults to GLSL. See shader profiles below."                      },
 		{ '\0', "preprocess",              0, NULL,             "Only pre-process."                                                               },
@@ -1154,6 +1219,11 @@ namespace bgfx
 		}
 
 		const Profile* profile = &s_profiles[profileId];
+		if (profile->lang == ShadingLang::Gx2 && _options.shaderType != 'v' && _options.shaderType != 'f')
+		{
+			bx::write(_messageWriter, &messageErr, "GX2 supports vertex and fragment shaders only.\n");
+			return false;
+		}
 
 		if (_options.uses16BitTypes
 		&&  profile->lang == ShadingLang::Dxil
@@ -1221,6 +1291,8 @@ namespace bgfx
 		preprocessor.setDefaultDefine("BX_PLATFORM_PS4");
 		preprocessor.setDefaultDefine("BX_PLATFORM_WINDOWS");
 		preprocessor.setDefaultDefine("BX_PLATFORM_XBOXONE");
+		preprocessor.setDefaultDefine("BX_PLATFORM_WIIU");
+		preprocessor.setDefaultDefine("BGFX_SHADER_LANGUAGE_GX2");
 
 		preprocessor.setDefaultDefine("BGFX_SHADER_LANGUAGE_GLSL");
 		preprocessor.setDefaultDefine("BGFX_SHADER_LANGUAGE_ESSL");
@@ -1240,7 +1312,7 @@ namespace bgfx
 		char hlslDefine[128] = { '\0' };
 		char dxilDefine[128] = { '\0' };
 
-		if (profile->lang == ShadingLang::GLSL)
+		if (profile->lang == ShadingLang::GLSL || profile->lang == ShadingLang::Gx2)
 		{
 			bx::snprintf(glslDefine, BX_COUNTOF(glslDefine)
 				, "BGFX_SHADER_LANGUAGE_GLSL=%d"
@@ -1273,9 +1345,20 @@ namespace bgfx
 			}
 		}
 
+		if (profile->lang == ShadingLang::Gx2)
+		{
+			preprocessor.setDefine("BGFX_SHADER_LANGUAGE_GX2=1");
+			preprocessor.setDefine(glslDefine);
+		}
+
 		const char* platform = _options.platform.c_str();
 
-		if (0 == bx::strCmpI(platform, "android") )
+		if (0 == bx::strCmpI(platform, "wiiu") )
+		{
+			preprocessor.setDefine("BX_PLATFORM_WIIU=1");
+			preprocessor.setDefine(glslDefine);
+		}
+		else if (0 == bx::strCmpI(platform, "android") )
 		{
 			preprocessor.setDefine("BX_PLATFORM_ANDROID=1");
 			if (profile->lang == ShadingLang::SpirV)
@@ -1530,7 +1613,8 @@ namespace bgfx
 						var.m_init.assign(init.getPtr(), init.getTerm() );
 					}
 
-					varyingMap.insert(std::make_pair(var.m_name, var) );
+					varyingMap.insert(std::make_pair(
+						profile->lang == ShadingLang::Gx2 ? var.m_name.substr(0, var.m_name.find('[')) : var.m_name, var) );
 				}
 
 				parse = bx::StringView(nl.getPtr(), term.getTerm() );
@@ -1637,24 +1721,28 @@ namespace bgfx
 		{
 			if ('f' == _options.shaderType)
 			{
-				bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_FSH, &err);
+				bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_FSH, &err);
 			}
 			else if ('v' == _options.shaderType)
 			{
-				bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_VSH, &err);
+				bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_VSH, &err);
 			}
 			else
 			{
-				bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_CSH, &err);
+				bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_CSH, &err);
 			}
 
-			bx::write(_shaderWriter, inputHash, &err);
-			bx::write(_shaderWriter, outputHash, &err);
+			bx::writeLE(_shaderWriter, inputHash, &err);
+			bx::writeLE(_shaderWriter, outputHash, &err);
 		}
 
 		if (raw)
 		{
-			if (profile->lang == ShadingLang::GLSL)
+			if (profile->lang == ShadingLang::Gx2)
+			{
+				compiled = compileGx2Shader(_options, profile->id, input, _shaderWriter, _messageWriter);
+			}
+			else if (profile->lang == ShadingLang::GLSL)
 			{
 				RawBindings().write(_shaderWriter, &err);
 				bx::write(_shaderWriter, uint16_t(0), &err);
@@ -1794,9 +1882,9 @@ namespace bgfx
 					{
 						std::string code;
 
-						bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_CSH, &err);
-						bx::write(_shaderWriter, uint32_t(0), &err);
-						bx::write(_shaderWriter, outputHash, &err);
+						bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_CSH, &err);
+						bx::writeLE(_shaderWriter, uint32_t(0), &err);
+						bx::writeLE(_shaderWriter, outputHash, &err);
 
 						if (profile->lang == ShadingLang::GLSL)
 						{
@@ -1882,7 +1970,11 @@ namespace bgfx
 			}
 			else
 			{
-				if (profile->lang == ShadingLang::GLSL)
+				if (profile->lang == ShadingLang::Gx2)
+				{
+					writeGx2Interfaces(preprocessor, varyingMap, shaderInputs, shaderOutputs, _options.shaderType);
+				}
+				else if (profile->lang == ShadingLang::GLSL)
 				{
 					// bgfx shadow2D/Proj behave like EXT_shadow_samplers
 					// not as GLSL language 1.2 specs shadow2D/Proj.
@@ -2295,24 +2387,49 @@ namespace bgfx
 
 						if ('f' == _options.shaderType)
 						{
-							bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_FSH, &err);
-							bx::write(_shaderWriter, inputHash, &err);
-							bx::write(_shaderWriter, uint32_t(0), &err);
+							bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_FSH, &err);
+							bx::writeLE(_shaderWriter, inputHash, &err);
+							bx::writeLE(_shaderWriter, uint32_t(0), &err);
 						}
 						else if ('v' == _options.shaderType)
 						{
-							bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_VSH, &err);
-							bx::write(_shaderWriter, uint32_t(0), &err);
-							bx::write(_shaderWriter, outputHash, &err);
+							bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_VSH, &err);
+							bx::writeLE(_shaderWriter, uint32_t(0), &err);
+							bx::writeLE(_shaderWriter, outputHash, &err);
 						}
 						else
 						{
-							bx::write(_shaderWriter, BGFX_CHUNK_MAGIC_CSH, &err);
-							bx::write(_shaderWriter, uint32_t(0), &err);
-							bx::write(_shaderWriter, outputHash, &err);
+							bx::writeLE(_shaderWriter, BGFX_CHUNK_MAGIC_CSH, &err);
+							bx::writeLE(_shaderWriter, uint32_t(0), &err);
+							bx::writeLE(_shaderWriter, outputHash, &err);
 						}
 
-						if (profile->lang == ShadingLang::GLSL)
+						if (profile->lang == ShadingLang::Gx2)
+						{
+							code = "#version 430\n";
+							if (_options.shaderType == 'f')
+							{
+								if (!bx::findIdentifierMatch(input, "gl_FragColor").isEmpty())
+								{
+									code += "layout(location=0) out vec4 bgfx_FragColor;\n#define gl_FragColor bgfx_FragColor\n";
+								}
+								else if (!bx::findIdentifierMatch(input, "gl_FragData").isEmpty())
+								{
+									uint32_t outputs = 1;
+									for (uint32_t ii = 0; ii < 8; ++ii)
+									{
+										char name[32];
+										bx::snprintf(name, sizeof(name), "gl_FragData[%u]", ii);
+										if (!bx::strFind(input, name).isEmpty()) outputs = ii + 1;
+									}
+									bx::stringPrintf(code, "layout(location=0) out vec4 bgfx_FragData[%u];\n#define gl_FragData bgfx_FragData\n", outputs);
+								}
+							}
+							code += _comment;
+							code += preprocessor.m_preprocessed;
+							compiled = compileGx2Shader(_options, profile->id, code, _shaderWriter, _messageWriter);
+						}
+						else if (profile->lang == ShadingLang::GLSL)
 						{
 							const bx::StringView preprocessedInput(preprocessor.m_preprocessed.c_str() );
 							uint32_t glsl_profile = profile->id;

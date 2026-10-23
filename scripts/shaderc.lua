@@ -437,6 +437,25 @@ project "glslang"
 project "shaderc"
 	kind "ConsoleApp"
 
+	-- Optional native GX2 compiler in a normal multi-backend shaderc build.
+	-- The compact Wii U-only host build lives in scripts/shaderc-wiiu/.
+	local cafeglsl = os.getenv("CAFEGLSL_PREFIX")
+	if cafeglsl then
+		defines { "SHADERC_CONFIG_HAS_CAFEGLSL=1" }
+		includedirs { path.join(cafeglsl, "include") }
+		local metadata = path.join(cafeglsl, "lib/pkgconfig/cafeglsl.pc")
+		local flags = os.outputof('pkg-config --static --libs "' .. metadata .. '"')
+		for flag in flags:gmatch("%S+") do
+			if flag:sub(1, 2) == "-L" then
+				libdirs { flag:sub(3) }
+			elseif flag:sub(1, 2) == "-l" then
+				links { flag:sub(3) }
+			else
+				linkoptions { flag }
+			end
+		end
+	end
+
 	includedirs {
 		path.join(BIMG_DIR, "include"),
 		path.join(BGFX_DIR, "include"),
