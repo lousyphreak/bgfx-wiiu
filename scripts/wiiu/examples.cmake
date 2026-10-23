@@ -116,9 +116,16 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
 
     # Graphics assets are universal; native compute assets are selected explicitly.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
-    if(example MATCHES "^(08-update|46-fsr|48-drawindirect|53-sky2)$")
+    if(example MATCHES "^(08-update|39-assao|46-fsr|48-drawindirect|53-sky2)$")
         file(GLOB compute_sources CONFIGURE_DEPENDS "${example_dir}/cs_*.sc")
         list(APPEND shader_sources ${compute_sources})
+    endif()
+    if(example STREQUAL "39-assao")
+        # Package the 23 supported original stages. Adaptive quality still needs
+        # a global atomicAdd in this stage, which native R700 cannot compile.
+        # The unchanged application loads it unconditionally and defaults to
+        # adaptive quality; this package does not establish a startup pass.
+        list(FILTER shader_sources EXCLUDE REGEX "cs_assao_postprocess_importance_map_b\\.sc$")
     endif()
     if(example STREQUAL "21-deferred")
         # The original application gates UAV programs on IMAGE_RW, absent on GX2.
