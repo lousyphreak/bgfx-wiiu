@@ -25,6 +25,13 @@
 #	define UNROLL [unroll]
 #endif // BGFX_SHADER_LANGUAGE_GLSL
 
+#if BGFX_SHADER_LANGUAGE_GX2
+// GX2 rasterizes downward in Y; bgfx exposes GLSL-oriented derivatives.
+#	define dFdy(_y)       dFdy(-(_y))
+#	define dFdyCoarse(_y) dFdyCoarse(-(_y))
+#	define dFdyFine(_y)   dFdyFine(-(_y))
+#endif
+
 #define BGFX_SHADER_MATRIX_COLUMN_MAJOR (0 \
 	|| BGFX_SHADER_LANGUAGE_GLSL           \
 	)

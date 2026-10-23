@@ -2089,6 +2089,11 @@ namespace bgfx { namespace gx2
 				}
 				else
 				{
+					// Match the conventional BGRA8 video capture stream. The snapshot is
+					// retired and CPU-owned here; no GPU upload or extra allocation is needed.
+					bimg::imageSwizzleBgra8(output.block->data, output.pitch, output.width, output.height,
+						output.block->data, output.pitch);
+					output.format = TextureFormat::BGRA8;
 					if (!m_captureActive || m_captureWidth != output.width || m_captureHeight != output.height
 					|| m_capturePitch != output.pitch || m_captureFormat != output.format)
 					{

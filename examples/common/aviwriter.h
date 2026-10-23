@@ -45,6 +45,93 @@ struct AviWriter
 
 		bx::StaticMemoryBlockWriter mem(m_frame, 8);
 		// Stream Data (LIST 'movi' Chunk) http://msdn.microsoft.com/en-us/library/ms899496.aspx
+#if BX_PLATFORM_WIIU
+		bx::writeLE(&mem, BX_MAKEFOURCC('0', '0', 'd', 'b'), &err);
+		bx::writeLE(&mem, m_frameSize, &err);
+
+		bx::writeLE(m_writer, BX_MAKEFOURCC('R', 'I', 'F', 'F'), &err);
+		m_riffSizeOffset = m_writer->seek();
+		bx::writeLE(m_writer, uint32_t(0), &err);
+
+		bx::writeLE(m_writer, BX_MAKEFOURCC('A', 'V', 'I', ' '), &err);
+
+		// AVI RIFF Form http://msdn.microsoft.com/en-us/library/ms899422.aspx
+		bx::writeLE(m_writer, BX_MAKEFOURCC('L', 'I', 'S', 'T'), &err);
+		bx::writeLE(m_writer, uint32_t(192), &err);
+		bx::writeLE(m_writer, BX_MAKEFOURCC('h', 'd', 'r', 'l'), &err);
+
+		// AVI Main Header http://msdn.microsoft.com/en-us/library/ms779632.aspx
+		bx::writeLE(m_writer, BX_MAKEFOURCC('a', 'v', 'i', 'h'), &err);
+		bx::writeLE(m_writer, uint32_t(56), &err);
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwMicroSecPerFrame
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwMaxBytesPerSec
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwPaddingGranularity
+		bx::writeLE(m_writer, uint32_t(0x110), &err);  // dwFlags
+
+		m_totalFramesOffset = m_writer->seek();
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwTotalFrames
+
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwInitialFrames
+		bx::writeLE(m_writer, uint32_t(1), &err);      // dwStreams
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwSuggestedBufferSize
+		bx::writeLE(m_writer, _width, &err);           // dwWidth
+		bx::writeLE(m_writer, _height, &err);          // dwHeight
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwReserved0
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwReserved1
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwReserved2
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwReserved3
+
+		bx::writeLE(m_writer, BX_MAKEFOURCC('L', 'I', 'S', 'T'), &err);
+		bx::writeLE(m_writer, uint32_t(116), &err);
+		bx::writeLE(m_writer, BX_MAKEFOURCC('s', 't', 'r', 'l'), &err);
+
+		// AVISTREAMHEADER Structure http://msdn.microsoft.com/en-us/library/ms779638.aspx
+		bx::writeLE(m_writer, BX_MAKEFOURCC('s', 't', 'r', 'h'), &err);
+		bx::writeLE(m_writer, uint32_t(56), &err);
+		// AVI Stream Headers http://msdn.microsoft.com/en-us/library/ms899423.aspx
+		bx::writeLE(m_writer, BX_MAKEFOURCC('v', 'i', 'd', 's'), &err); // fccType
+		bx::writeLE(m_writer, BX_MAKEFOURCC('D', 'I', 'B', ' '), &err); // fccHandler
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwFlags
+		bx::writeLE(m_writer, uint16_t(0), &err);      // wPriority
+		bx::writeLE(m_writer, uint16_t(0), &err);      // wLanguage
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwInitialFrames
+		bx::writeLE(m_writer, uint32_t(1), &err);      // dwScale
+		bx::writeLE(m_writer, _fps, &err);             // dwRate
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwStart
+
+		m_lengthOffset = m_writer->seek();
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwLength
+
+		bx::writeLE(m_writer, m_frameSize, &err);      // dwSuggestedBufferSize
+		bx::writeLE(m_writer, UINT32_MAX, &err);       // dwQuality
+		bx::writeLE(m_writer, uint32_t(0), &err);      // dwSampleSize
+		bx::writeLE(m_writer, int16_t(0), &err);       // rcFrame.left
+		bx::writeLE(m_writer, int16_t(0), &err);       // rcFrame.top
+		bx::writeLE(m_writer, uint16_t(_width), &err); // rcFrame.right
+		bx::writeLE(m_writer, uint16_t(_height), &err);// rcFrame.bottom
+
+		bx::writeLE(m_writer, BX_MAKEFOURCC('s', 't', 'r', 'f'), &err);
+		bx::writeLE(m_writer, uint32_t(40), &err);
+
+		// BITMAPINFOHEADER structure http://msdn.microsoft.com/en-us/library/windows/desktop/dd318229%28v=vs.85%29.aspx
+		bx::writeLE(m_writer, uint32_t(40), &err);     // biSize
+		bx::writeLE(m_writer, _width, &err);           // biWidth
+		bx::writeLE(m_writer, _height, &err);          // biHeight
+		bx::writeLE(m_writer, uint16_t(1), &err);      // biPlanes
+		bx::writeLE(m_writer, uint16_t(24), &err);     // biBitCount
+		bx::writeLE(m_writer, uint32_t(0), &err);      // biCompression
+		bx::writeLE(m_writer, m_frameSize, &err);      // biSizeImage
+		bx::writeLE(m_writer, uint32_t(0), &err);      // biXPelsPerMeter
+		bx::writeLE(m_writer, uint32_t(0), &err);      // biYPelsPerMeter
+		bx::writeLE(m_writer, uint32_t(0), &err);      // biClrUsed
+		bx::writeLE(m_writer, uint32_t(0), &err);      // biClrImportant
+
+		bx::writeLE(m_writer, BX_MAKEFOURCC('L', 'I', 'S', 'T'), &err);
+
+		m_moviListOffset = m_writer->seek();
+		bx::writeLE(m_writer, uint32_t(0), &err);
+		bx::writeLE(m_writer, BX_MAKEFOURCC('m', 'o', 'v', 'i'), &err);
+#else
 		bx::write(&mem, BX_MAKEFOURCC('0', '0', 'd', 'b'), &err);
 		bx::write(&mem, m_frameSize, &err);
 
@@ -130,6 +217,7 @@ struct AviWriter
 		m_moviListOffset = m_writer->seek();
 		bx::write(m_writer, uint32_t(0), &err);
 		bx::write(m_writer, BX_MAKEFOURCC('m', 'o', 'v', 'i'), &err);
+#endif // BX_PLATFORM_WIIU
 
 		return true;
 	}
@@ -142,6 +230,20 @@ struct AviWriter
 
 			int64_t pos = m_writer->seek();
 			m_writer->seek(m_moviListOffset, bx::Whence::Begin);
+#if BX_PLATFORM_WIIU
+			bx::writeLE(m_writer, uint32_t(pos-m_moviListOffset-4), &err);
+			m_writer->seek(pos, bx::Whence::Begin);
+
+			bx::writeLE(m_writer, BX_MAKEFOURCC('i', 'd', 'x', '1'), &err);
+			bx::writeLE(m_writer, m_numFrames*16, &err);
+
+			for (uint32_t ii = 0, offset = 4; ii < m_numFrames; ++ii)
+			{
+				bx::writeLE(m_writer, BX_MAKEFOURCC('0', '0', 'd', 'b'), &err);
+				bx::writeLE(m_writer, uint32_t(16), &err);
+				bx::writeLE(m_writer, offset, &err);
+				bx::writeLE(m_writer, m_frameSize, &err);
+#else
 			bx::write(m_writer, uint32_t(pos-m_moviListOffset-4), &err);
 			m_writer->seek(pos, bx::Whence::Begin);
 
@@ -154,11 +256,21 @@ struct AviWriter
 				bx::write(m_writer, uint32_t(16), &err);
 				bx::write(m_writer, offset, &err);
 				bx::write(m_writer, m_frameSize, &err);
+#endif // BX_PLATFORM_WIIU
 				offset += m_frameSize + 8;
 			}
 
 			pos = m_writer->seek();
 			m_writer->seek(m_riffSizeOffset, bx::Whence::Begin);
+#if BX_PLATFORM_WIIU
+			bx::writeLE(m_writer, uint32_t(pos-m_riffSizeOffset-4), &err);
+
+			m_writer->seek(m_totalFramesOffset, bx::Whence::Begin);
+			bx::writeLE(m_writer, m_numFrames, &err);
+
+			m_writer->seek(m_lengthOffset, bx::Whence::Begin);
+			bx::writeLE(m_writer, m_numFrames, &err);
+#else
 			bx::write(m_writer, uint32_t(pos-m_riffSizeOffset-4), &err);
 
 			m_writer->seek(m_totalFramesOffset, bx::Whence::Begin);
@@ -166,6 +278,7 @@ struct AviWriter
 
 			m_writer->seek(m_lengthOffset, bx::Whence::Begin);
 			bx::write(m_writer, m_numFrames, &err);
+#endif // BX_PLATFORM_WIIU
 
 			bx::close(m_writer);
 
