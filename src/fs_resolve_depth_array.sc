@@ -5,7 +5,7 @@
 
 #include "bgfx_shader.sh"
 
-#if BGFX_SHADER_LANGUAGE_HLSL || BGFX_SHADER_LANGUAGE_SPIRV
+#if BGFX_SHADER_LANGUAGE_HLSL || BGFX_SHADER_LANGUAGE_SPIRV || BGFX_SHADER_LANGUAGE_GX2
 SAMPLER2DMSARRAY(bgfx_texDepthMs, 0);
 
 void main()
@@ -19,4 +19,4 @@ void main()
 {
 	gl_FragDepth = texelFetch(bgfx_texDepthMs, ivec2(gl_FragCoord.xy), 0).x;
 }
-#endif // BGFX_SHADER_LANGUAGE_HLSL || BGFX_SHADER_LANGUAGE_SPIRV
+#endif // BGFX_SHADER_LANGUAGE_HLSL || BGFX_SHADER_LANGUAGE_SPIRV || BGFX_SHADER_LANGUAGE_GX2

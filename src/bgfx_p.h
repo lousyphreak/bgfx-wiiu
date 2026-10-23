@@ -1013,7 +1013,7 @@ namespace bgfx
 		static bool isSupported(TextureFormat::Enum _format)
 		{
 
-			return BX_ENABLED(BGFX_CONFIG_MIP_GEN_FALLBACK)
+			return (BX_ENABLED(BGFX_CONFIG_MIP_GEN_FALLBACK) || BX_ENABLED(BGFX_CONFIG_RENDERER_GX2))
 				&& (false
 					|| TextureFormat::RGBA8   == _format
 					|| TextureFormat::BGRA8   == _format

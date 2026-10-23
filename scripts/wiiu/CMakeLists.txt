@@ -27,7 +27,7 @@ add_library(bgfx STATIC
 
 set(generated_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(embedded_includes "")
-foreach(shader IN ITEMS vs_debugfont fs_debugfont vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
+foreach(shader IN ITEMS vs_debugfont fs_debugfont vs_resolve_depth fs_resolve_depth fs_resolve_depth_array fs_gx2_mip_2d fs_gx2_mip_array fs_gx2_mip_3d vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
     if(shader MATCHES "^vs_")
         set(stage vertex)
     else()

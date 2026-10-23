@@ -514,10 +514,13 @@ namespace bgfx
 		BGFX_EMBEDDED_SHADER(fs_clear5),
 		BGFX_EMBEDDED_SHADER(fs_clear6),
 		BGFX_EMBEDDED_SHADER(fs_clear7),
-#if !BGFX_CONFIG_RENDERER_GX2
 		BGFX_EMBEDDED_SHADER(vs_resolve_depth),
 		BGFX_EMBEDDED_SHADER(fs_resolve_depth),
 		BGFX_EMBEDDED_SHADER(fs_resolve_depth_array),
+#if BGFX_CONFIG_RENDERER_GX2
+		BGFX_EMBEDDED_SHADER(fs_gx2_mip_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_mip_array),
+		BGFX_EMBEDDED_SHADER(fs_gx2_mip_3d),
 #endif
 
 #if BGFX_CONFIG_MIP_GEN_FALLBACK
@@ -1014,14 +1017,30 @@ namespace bgfx
 		}
 	}
 
-#if BGFX_CONFIG_MIP_GEN_FALLBACK
+#if BGFX_CONFIG_MIP_GEN_FALLBACK || BGFX_CONFIG_RENDERER_GX2
 	void MipGen::init()
 	{
 		BGFX_CHECK_API_THREAD();
 
 		const RendererType::Enum rendererType = g_caps.rendererType;
 
+#if BGFX_CONFIG_RENDERER_GX2
+		if (RendererType::Gx2 == rendererType)
+		{
+			static const char* fragments[] = {"fs_gx2_mip_2d", "fs_gx2_mip_array", "fs_gx2_mip_3d"};
+			for (uint32_t ii = 0; ii < BX_COUNTOF(fragments); ++ii)
+			{
+				ShaderHandle vsh = createEmbeddedShader(s_embeddedShaders, rendererType, "vs_resolve_depth");
+				ShaderHandle fsh = createEmbeddedShader(s_embeddedShaders, rendererType, fragments[ii]);
+				m_program[ii] = createProgram(vsh, fsh, true);
+			}
+			u_mipGen = createUniform("u_mipGen", UniformType::Vec4);
+			s_texMipSrc = createUniform("s_texMipSrc", UniformType::Sampler);
+		}
+		else if (false
+#else
 		if (false
+#endif // BGFX_CONFIG_RENDERER_GX2
 		||  RendererType::Direct3D12 == rendererType
 		||  RendererType::WebGPU     == rendererType
 		   )
@@ -1156,6 +1175,7 @@ namespace bgfx
 		const RendererType::Enum rendererType = g_caps.rendererType;
 
 		if (false
+		||  RendererType::Gx2        == rendererType
 		||  RendererType::Direct3D11 == rendererType
 		||  RendererType::Direct3D12 == rendererType
 		||  RendererType::Vulkan     == rendererType

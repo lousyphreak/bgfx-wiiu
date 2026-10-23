@@ -86,7 +86,7 @@ namespace bgfx { namespace gx2
 	{
 		Block* block = NULL;
 		std::vector<Block*> spare;
-		Rect dirty = {};
+		std::vector<Rect> dirty;
 	};
 
 	struct TextureLevel
@@ -95,16 +95,36 @@ namespace bgfx { namespace gx2
 		std::vector<TextureStage> slices;
 	};
 
+	struct RenderView
+	{
+		uint16_t mip, layer, count;
+		bool autoMips = false;
+	};
+
 	struct Texture
 	{
 		GX2Texture texture = {};
 		Block* image = NULL;
+		GX2Surface renderSurface = {};
+		GX2Surface depthSamples = {}, resolvedDepth = {};
+		Block* depthSamplesImage = NULL;
+		Block* resolvedDepthImage = NULL;
+		Block* renderImage = NULL;
+		Block* auxiliary = NULL;
+		Block* hiZ = NULL;
+		std::vector<RenderView> rendered;
 		std::vector<Block*> spareImages;
 		std::vector<TextureLevel> levels;
 		uint64_t flags = 0;
 		TextureFormat::Enum format = TextureFormat::Unknown;
 		uint32_t mipOffset = 0;
 		bool pending = false;
+		float depthClear = 1.0f;
+		uint32_t stencilClear = 0;
+	};
+	struct FrameBuffer
+	{
+		std::vector<Attachment> attachments;
 	};
 } }
 #endif
