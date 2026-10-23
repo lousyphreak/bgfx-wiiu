@@ -724,8 +724,13 @@ namespace bgfx
 		m_layout
 			.begin()
 			.add(Attrib::Position,  3, AttribType::Float)
+#if BX_PLATFORM_WIIU
+			.addPackedColor(Attrib::Color0)
+			.addPackedColor(Attrib::Color1)
+#else
 			.add(Attrib::Color0,    4, AttribType::Uint8, true)
 			.add(Attrib::Color1,    4, AttribType::Uint8, true)
+#endif // BX_PLATFORM_WIIU
 			.add(Attrib::TexCoord0, 2, AttribType::Float)
 			.end();
 
@@ -2464,6 +2469,7 @@ namespace bgfx
 		return NULL;
 	}
 
+#if !BX_PLATFORM_WIIU
 	static TextureFormat::Enum s_emulatedFormats[] =
 	{
 		TextureFormat::BC1,
@@ -2502,6 +2508,7 @@ namespace bgfx
 		TextureFormat::RGBA8, // D3D9 doesn't support RGBA8
 	};
 
+#endif // BX_PLATFORM_WIIU
 	static TextureFormat::Enum findBackBufferFormat(TextureFormat::Enum _format)
 	{
 		const TextureFormat::Enum preferred[] =
@@ -2696,6 +2703,7 @@ namespace bgfx
 			return false;
 		}
 
+#if !BX_PLATFORM_WIIU
 		for (uint32_t ii = 0; ii < BX_COUNTOF(s_emulatedFormats); ++ii)
 		{
 			const uint32_t fmt = s_emulatedFormats[ii];
@@ -2704,9 +2712,14 @@ namespace bgfx
 			g_caps.formats[fmt] |= 0 == (g_caps.formats[fmt] & BGFX_CAPS_FORMAT_TEXTURE_CUBE) ? BGFX_CAPS_FORMAT_TEXTURE_CUBE_EMULATED : 0;
 		}
 
+#endif // BX_PLATFORM_WIIU
 		for (uint32_t ii = 0; ii < TextureFormat::UnknownDepth; ++ii)
 		{
+#if BX_PLATFORM_WIIU
+			const bool convertable = bimg::imageDecodeSupported(bimg::TextureFormat::Enum(ii) );
+#else
 			bool convertable = bimg::imageConvert(bimg::TextureFormat::BGRA8, bimg::TextureFormat::Enum(ii) );
+#endif // BX_PLATFORM_WIIU
 			g_caps.formats[ii] |= 0 == (g_caps.formats[ii] & BGFX_CAPS_FORMAT_TEXTURE_2D  ) && convertable ? BGFX_CAPS_FORMAT_TEXTURE_2D_EMULATED   : 0;
 			g_caps.formats[ii] |= 0 == (g_caps.formats[ii] & BGFX_CAPS_FORMAT_TEXTURE_3D  ) && convertable ? BGFX_CAPS_FORMAT_TEXTURE_3D_EMULATED   : 0;
 			g_caps.formats[ii] |= 0 == (g_caps.formats[ii] & BGFX_CAPS_FORMAT_TEXTURE_CUBE) && convertable ? BGFX_CAPS_FORMAT_TEXTURE_CUBE_EMULATED : 0;

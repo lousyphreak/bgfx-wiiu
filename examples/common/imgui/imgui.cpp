@@ -82,7 +82,11 @@ struct OcornutImguiContext
 								, (uint16_t)texData->Height
 								, false
 								, 1
+#if BX_PLATFORM_WIIU
+								, texData->Format == ImTextureFormat_Alpha8 ? bgfx::TextureFormat::A8 : bgfx::TextureFormat::BGRA8
+#else
 								, bgfx::TextureFormat::BGRA8
+#endif // BX_PLATFORM_WIIU
 								, 0
 								),
 							.flags  = IMGUI_FLAGS_ALPHA_BLEND,
@@ -283,6 +287,10 @@ struct OcornutImguiContext
 		m_imgui = ImGui::CreateContext();
 
 		ImGuiIO& io = ImGui::GetIO();
+#if BX_PLATFORM_WIIU
+		// These fonts are monochrome; an alpha atlas also avoids native packed-pixel byte order.
+		io.Fonts->TexDesiredFormat = ImTextureFormat_Alpha8;
+#endif // BX_PLATFORM_WIIU
 
 		io.DisplaySize = ImVec2(1280.0f, 720.0f);
 		io.DeltaTime   = 1.0f / 60.0f;

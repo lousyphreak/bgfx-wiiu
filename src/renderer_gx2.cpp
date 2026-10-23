@@ -214,7 +214,7 @@ namespace bgfx { namespace gx2
 		RendererContextGX2(const Init& _init)
 		{
 			m_mainWindow.swapChain = _init.swapChain;
-			g_caps.supported = BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY;
+			g_caps.supported = BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -1266,7 +1266,7 @@ namespace bgfx { namespace gx2
 		{
 			const Texture& texture = m_textures[_handle.idx];
 			const uint64_t flags = texture.flags;
-			TextureCreate create = {}; create.m_format = texture.format; create.m_width = _width; create.m_height = _height;
+			TextureCreate create = {}; create.m_format = texture.requestedFormat; create.m_width = _width; create.m_height = _height;
 			create.m_numMips = _numMips; create.m_numLayers = _numLayers;
 			uint8_t data[sizeof(uint32_t)+sizeof(create)]; bx::StaticMemoryBlockWriter writer(data, sizeof(data));
 			bx::write(&writer, kChunkMagicTex, bx::ErrorAssert{}); bx::write(&writer, create, bx::ErrorAssert{});
@@ -2249,7 +2249,13 @@ namespace bgfx { namespace gx2
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
 				m_stageData[stage] = (uint8_t*)m_upload->data + m_uploadUsed;
 				m_uploadUsed += bx::alignUp(shader.uniformSize, 256);
-				// Every active field is copied below or supplied by the predefined-uniform pass.
+				const GX2VertexShader* vertex = (const GX2VertexShader*)shader.header->data;
+				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
+				const uint32_t count = stage ? fragment->initialValueCount : vertex->initialValueCount;
+				const GX2UniformInitialValue* initial = stage ? fragment->initialValues : vertex->initialValues;
+				for (uint32_t ii = 0; ii < count; ++ii)
+					writeFloats(m_stageData[stage]+initial[ii].offset*4, initial[ii].value, 4);
+				// Application values override native initializers; predefined fields follow.
 				for (const Uniform& uniform : shader.uniforms)
 				{
 					uint8_t* dst = m_stageData[stage]+uniform.offset*4;
@@ -2310,7 +2316,8 @@ namespace bgfx { namespace gx2
 			stream.location = _var.location; stream.buffer = _stream; stream.offset = _layout.m_offset[_attr];
 			stream.format = GX2AttribFormat(format); stream.type = GX2_ATTRIB_INDEX_PER_VERTEX;
 			stream.mask = GX2_SEL_MASK(0, num >= 2 ? 1 : 4, num >= 3 ? 2 : 4, num == 4 ? 3 : 5);
-			stream.endianSwap = type <= AttribType::Uint8 ? GX2_ENDIAN_SWAP_NONE
+			stream.endianSwap = _layout.isPackedColor(_attr) ? GX2_ENDIAN_SWAP_8_IN_32
+				: type <= AttribType::Uint8 ? GX2_ENDIAN_SWAP_NONE
 				: (type == AttribType::Int16 || type == AttribType::Uint16 || type == AttribType::Half) ? GX2_ENDIAN_SWAP_8_IN_16 : GX2_ENDIAN_SWAP_8_IN_32;
 			return stream;
 		}
@@ -2631,8 +2638,7 @@ namespace bgfx { namespace gx2
 		void prepareWindow(Window& _window)
 		{
 			const GX2ColorBuffer& borrowed = *_window.target.color;
-			const uint32_t requested = (_window.swapChain.flags & BGFX_SWAP_CHAIN_MSAA_MASK) >> BGFX_SWAP_CHAIN_MSAA_SHIFT;
-			if (requested > uint32_t(GX2_AA_MODE8X)) { unsupported("16x swap-chain MSAA"); return; }
+			const uint32_t requested = bx::min<uint32_t>((_window.swapChain.flags & BGFX_SWAP_CHAIN_MSAA_MASK) >> BGFX_SWAP_CHAIN_MSAA_SHIFT, GX2_AA_MODE8X);
 			const GX2AAMode aa = requested ? GX2AAMode(requested) : borrowed.surface.aa;
 			if (borrowed.surface.aa != GX2_AA_MODE1X && borrowed.surface.aa != aa)
 			{ unsupported("changing an adapter's multisample presentation target sample count"); return; }
@@ -3023,14 +3029,6 @@ namespace bgfx { namespace gx2
 			if (!_numIndices) return;
 			const uint32_t numVertices = _numIndices*4/6;
 			const uint32_t stride = _blitter.m_layout.m_stride;
-			// The shared blitter writes packed ABGR integers. Convert its two colors
-			// into the RGBA component bytes promised by the ordinary Uint8 layout.
-			for (uint32_t ii = 0; ii < numVertices; ++ii)
-				for (Attrib::Enum attr : { Attrib::Color0, Attrib::Color1 })
-				{
-					uint32_t* color = (uint32_t*)(_blitter.m_vb->data+ii*stride+_blitter.m_layout.m_offset[attr]);
-					*color = bx::toLittleEndian(*color);
-				}
 			Buffer& vertex = m_vertexBuffers[_blitter.m_vb->handle.idx];
 			Buffer& index = m_indexBuffers[_blitter.m_ib->handle.idx];
 			update(vertex, 0, numVertices*stride, _blitter.m_vb->data, true, true);

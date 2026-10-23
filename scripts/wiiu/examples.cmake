@@ -26,11 +26,8 @@ add_library(example-common STATIC
 target_include_directories(example-common PUBLIC "${common_dir}" PRIVATE "${BGFX_DIR}/3rdparty")
 target_link_libraries(example-common PUBLIC bgfx SDL3::SDL3)
 target_compile_options(example-common PRIVATE -fno-exceptions -fno-rtti)
-# ImGui stores colors in native uint32_t values; GX2 consumes RGBA bytes.
 target_compile_definitions(example-common PUBLIC USE_ENTRY=1 ENTRY_CONFIG_IMPLEMENT_MAIN=1
-    IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS
-    IM_COL32_R_SHIFT=24 IM_COL32_G_SHIFT=16 IM_COL32_B_SHIFT=8 IM_COL32_A_SHIFT=0
-    IM_COL32_A_MASK=0x000000ff)
+    IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS)
 
 # Supply GX2 variants alongside the upstream embedded shader tables without
 # changing their checked-in, cross-platform headers or common renderer sources.
