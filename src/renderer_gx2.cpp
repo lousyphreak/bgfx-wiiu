@@ -63,6 +63,12 @@ namespace bgfx { namespace gx2
 		GX2_PRIMITIVE_MODE_LINES, GX2_PRIMITIVE_MODE_LINE_STRIP, GX2_PRIMITIVE_MODE_POINTS,
 	};
 
+	static uint32_t colorWriteMask(uint64_t _state)
+	{
+		return (_state & BGFX_STATE_WRITE_R ? 1 : 0) | (_state & BGFX_STATE_WRITE_G ? 2 : 0)
+			| (_state & BGFX_STATE_WRITE_B ? 4 : 0) | (_state & BGFX_STATE_WRITE_A ? 8 : 0);
+	}
+
 	static GX2SurfaceFormat textureFormat(TextureFormat::Enum _format, bool _srgb, uint32_t& _compMap)
 	{
 		_compMap = GX2_COMP_MAP(0, 1, 2, 3);
@@ -145,10 +151,9 @@ namespace bgfx { namespace gx2
 	struct RendererContextGX2 : public RendererContextI
 	{
 		RendererContextGX2(const Init& _init)
-			: m_platform(*(const Gx2PlatformData*)_init.swapChain.nwh)
-			, m_mainSwapChain(_init.swapChain)
 		{
-			g_caps.supported = BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY;
+			m_mainWindow.swapChain = _init.swapChain;
+			g_caps.supported = BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -170,8 +175,9 @@ namespace bgfx { namespace gx2
 				if (format == TextureFormat::RGBA8 || format == TextureFormat::BGRA8 || (format >= TextureFormat::BC1 && format <= TextureFormat::BC3))
 					g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_2D_SRGB | BGFX_CAPS_FORMAT_TEXTURE_3D_SRGB | BGFX_CAPS_FORMAT_TEXTURE_CUBE_SRGB;
 			}
+			g_caps.formats[TextureFormat::RGBA8] |= BGFX_CAPS_FORMAT_TEXTURE_BACKBUFFER;
 			g_caps.limits.maxTextureSize = 8192;
-			g_caps.limits.maxTextureLayers = 2048;
+			g_caps.limits.maxTextureLayers = 1365; // Cube views encode face ranges in 13 bits.
 			g_caps.limits.maxFBAttachments = 8;
 			g_caps.limits.maxVertexStreams = BGFX_CONFIG_MAX_VERTEX_STREAMS;
 			g_caps.limits.maxVertexAttributes = 32;
@@ -187,7 +193,8 @@ namespace bgfx { namespace gx2
 		~RendererContextGX2()
 		{
 			// SDL is still alive here. One shutdown drain covers live and retired storage.
-			if (m_depthImage) GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, m_depthImage->data, m_depthImage->size);
+			destroyWindow(m_mainWindow);
+			for (FrameBuffer& fb : m_frameBuffers) destroyWindow(fb.window);
 			GX2DrawDone(); seal(); transferPublish(true);
 			for (Block* block : m_allocations)
 			{
@@ -252,24 +259,33 @@ namespace bgfx { namespace gx2
 		void endFrame(bool _willPresent) override
 		{
 			transferPublish();
-			if ((!_willPresent || !m_target.color) && !m_touched.empty())
+			const bool present = _willPresent && preparePresent();
+			if (m_frameGpuTimer != UINT32_MAX)
 			{
-				GX2Flush();
-				seal();
+				endGpuTimer(m_frameGpuTimer); m_frameGpuTimer = UINT32_MAX;
 			}
+			if (!present && !m_touched.empty())
+			{
+				GX2Flush(); seal();
+			}
+			// Resource precommands of the next frame must not restore a stale borrow.
+			m_context = NULL;
 		}
 
 		void flip() override
 		{
-			if (m_target.color)
-			{
-				uint32_t swaps, flips;
-				OSTime lastFlip, lastVsync;
-				GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
-				if (swaps - flips >= 2) GX2WaitForFlip();
-				m_platform.present(m_platform.userData);
-				seal();
-			}
+			bool present = m_mainWindow.used;
+			for (FrameBuffer& fb : m_frameBuffers) present |= fb.window.used;
+			if (!present) return;
+			uint32_t swaps, flips;
+			OSTime lastFlip, lastVsync;
+			GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
+			if (swaps - flips >= 2) GX2WaitForFlip();
+			presentWindow(m_mainWindow);
+			for (FrameBuffer& fb : m_frameBuffers) presentWindow(fb.window);
+			// Each adapter submits preceding rendering before its borrowed scan copy.
+			// Those copies reference adapter-owned storage, not bgfx Blocks.
+			seal();
 		}
 
 		Block* acquire(std::vector<Block*>& _pool, uint32_t _size, bool _displayList = false)
@@ -399,7 +415,7 @@ namespace bgfx { namespace gx2
 			output.deadline = m_transferFrame+1;
 			output.rowBytes = _size; output.pitch = _size; output.rows = 1;
 			m_transferOutputs.push_back(output);
-			if (m_target.context) restore();
+			if (m_context) restore();
 		}
 
 		void gpuBufferSource(Buffer& _buffer)
@@ -845,6 +861,19 @@ namespace bgfx { namespace gx2
 			_texture.pending = true;
 		}
 
+		void invalidateTexture(Texture& _texture, GX2InvalidateMode _mode, bool _render = false)
+		{
+			Block* block = _render && _texture.renderImage ? _texture.renderImage : _texture.image;
+			if (block) GX2Invalidate(_mode, block->data, block->size);
+			else
+			{
+				// Borrowed GX2 textures may keep mip storage in a separate allocation.
+				const GX2Surface& surface = _texture.texture.surface;
+				GX2Invalidate(_mode, surface.image, surface.imageSize);
+				if (surface.mipmapSize) GX2Invalidate(_mode, surface.mipmaps, surface.mipmapSize);
+			}
+		}
+
 		void uploadTextures()
 		{
 			bool published = false;
@@ -876,7 +905,7 @@ namespace bgfx { namespace gx2
 				resolveTexture(texture);
 				// Native writes cannot rebuild separate Hi-Z metadata on shared depth storage.
 				if (texture.hiZ && !texture.renderImage) retire(texture.hiZ);
-				if (texture.image->stamp > GX2GetRetiredTimeStamp())
+				if (texture.image && texture.image->stamp > GX2GetRetiredTimeStamp())
 				{
 					Block* old = texture.image;
 					GX2Surface previous = texture.texture.surface;
@@ -918,8 +947,8 @@ namespace bgfx { namespace gx2
 						touch(stage.block); stage.dirty.clear(); stage.renderDirty = texture.renderImage != NULL;
 					}
 				}
-				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, texture.image->data, texture.image->size);
-				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, texture.image->data, texture.image->size);
+				invalidateTexture(texture, GX2_INVALIDATE_MODE_COLOR_BUFFER);
+				invalidateTexture(texture, GX2_INVALIDATE_MODE_TEXTURE);
 				if (texture.image) touch(texture.image); texture.pending = false; texture.arrayDirty = true;
 			}
 			m_pendingTextures.clear();
@@ -969,6 +998,8 @@ namespace bgfx { namespace gx2
 			if (_external)
 			{
 				texture.texture = *(const GX2Texture*)(uintptr_t)_external;
+				if ((_flags & BGFX_TEXTURE_RT_MASK) && (texture.texture.surface.aa != GX2_AA_MODE1X || texture.format == TextureFormat::D24 || texture.format == TextureFormat::D24S8 || texture.format == TextureFormat::D32FS8))
+					unsupported("external render targets requiring auxiliary or depth-conversion storage");
 				textureLevels(texture); return NULL;
 			}
 			const uint32_t nativeType = uint32_t(surface.format) & 0x300;
@@ -1051,6 +1082,7 @@ namespace bgfx { namespace gx2
 		void destroyTexture(TextureHandle _handle) override
 		{
 			Texture& texture = m_textures[_handle.idx];
+			if (texture.pending) m_pendingTextures.erase(std::remove(m_pendingTextures.begin(), m_pendingTextures.end(), &texture), m_pendingTextures.end());
 			retire(texture.image); retire(texture.renderImage); retire(texture.auxiliary); retire(texture.hiZ);
 			retire(texture.depthSamplesImage); retire(texture.resolvedDepthImage); retire(texture.arrayImage);
 			for (Block*& block : texture.spareArrayImages) retire(block);
@@ -1071,7 +1103,6 @@ namespace bgfx { namespace gx2
 			const uint32_t end = bx::min<uint32_t>(surface.mipLevels, uint32_t(_mip)+_numMips);
 			const bool volume = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D;
 			const bool render = 0 != (texture.flags & BGFX_TEXTURE_RT_MASK);
-			const bool depth = bimg::isDepth(bimg::TextureFormat::Enum(texture.format));
 			if (render) uploadTextures();
 			for (uint32_t mip = _mip; mip < end; ++mip)
 			{
@@ -1081,17 +1112,8 @@ namespace bgfx { namespace gx2
 				if (render)
 				{
 					const RenderView view = {uint16_t(mip), uint16_t(first), uint16_t(count)};
-					if (depth)
-					{
-						GX2DepthBuffer target = depthBuffer(texture, view);
-						GX2ClearDepthStencilEx(&target, 0, 0, GX2_CLEAR_FLAGS_DEPTH | GX2_CLEAR_FLAGS_STENCIL);
-						texture.depthClear = 0; texture.stencilClear = 0;
-					}
-					else
-					{
-						GX2ColorBuffer target = colorBuffer(texture, view);
-						GX2ClearColor(&target, 0, 0, 0, 0);
-					}
+					GX2ColorBuffer target = colorBuffer(texture, view);
+					GX2ClearColor(&target, 0, 0, 0, 0);
 					for (uint32_t slice = first; slice < first+count; ++slice) level.slices[slice].renderDirty = false;
 					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, view);
 				}
@@ -1107,9 +1129,6 @@ namespace bgfx { namespace gx2
 						{
 							uint8_t* dst = (uint8_t*)stage.block->data+row*level.source.pitch*info.blockSize;
 							bx::memSet(dst, 0, rowBytes);
-							// BC1's transparent zero selects index 3 with equal zero endpoints.
-							if (texture.format == TextureFormat::BC1)
-								for (uint32_t block = 0; block < rowBytes; block += 8) bx::memSet(dst+block+4, 0xff, 4);
 						}
 						stage.dirty.assign(1, {0, 0, uint16_t(level.source.width), uint16_t(level.source.height)});
 					}
@@ -1117,11 +1136,11 @@ namespace bgfx { namespace gx2
 			}
 			if (render)
 			{
+				invalidateTexture(texture, GX2_INVALIDATE_MODE_COLOR_BUFFER, true);
 				Block* block = texture.renderImage ? texture.renderImage : texture.image;
-				if (block) { GX2Invalidate(depth ? GX2_INVALIDATE_MODE_DEPTH_BUFFER : GX2_INVALIDATE_MODE_COLOR_BUFFER, block->data, block->size); touch(block); }
+				if (block) touch(block);
 				if (texture.auxiliary) touch(texture.auxiliary);
-				if (texture.hiZ) touch(texture.hiZ);
-				if (m_target.context) restore();
+				if (m_context) restore();
 			}
 			else
 			{
@@ -1141,8 +1160,13 @@ namespace bgfx { namespace gx2
 		}
 		void createFrameBuffer(FrameBufferHandle _handle, uint8_t _num, const Attachment* _attachments) override
 		{ m_frameBuffers[_handle.idx].attachments.assign(_attachments, _attachments+_num); }
-		void createFrameBuffer(FrameBufferHandle, const SwapChain&) override { unsupported("additional swap chains"); }
-		void destroyFrameBuffer(FrameBufferHandle _handle) override { m_frameBuffers[_handle.idx].attachments.clear(); }
+		void createFrameBuffer(FrameBufferHandle _handle, const SwapChain& _swapChain) override
+		{ m_frameBuffers[_handle.idx].window.swapChain = _swapChain; }
+		void destroyFrameBuffer(FrameBufferHandle _handle) override
+		{
+			FrameBuffer& fb = m_frameBuffers[_handle.idx];
+			destroyWindow(fb.window); fb.attachments.clear();
+		}
 		void invalidateOcclusionQuery(OcclusionQueryHandle _handle) override
 		{
 			// A reused bgfx handle must never receive an old allocation's result.
@@ -1285,7 +1309,7 @@ namespace bgfx { namespace gx2
 			GX2ColorBuffer color = {};
 			color.surface = _texture.renderSurface;
 			if (!_texture.renderImage) color.surface = _texture.texture.surface;
-			if (_srgb) { uint32_t comp; color.surface.format = textureFormat(_texture.format, true, comp); }
+			if (_texture.flags & BGFX_TEXTURE_SRGB_MUTABLE) { uint32_t comp; color.surface.format = textureFormat(_texture.format, _srgb, comp); }
 			color.viewMip = _view.mip; color.viewFirstSlice = _view.layer; color.viewNumSlices = _view.count;
 			if (_texture.auxiliary) { color.aaBuffer = _texture.auxiliary->data; color.aaSize = _texture.auxiliary->size; }
 			GX2InitColorBufferRegs(&color); return color;
@@ -1380,7 +1404,7 @@ namespace bgfx { namespace gx2
 				}
 				else
 				{
-					GX2ColorBuffer target = colorBuffer(_texture, single);
+					GX2ColorBuffer target = colorBuffer(_texture, single, 0 != (_texture.flags & BGFX_TEXTURE_SRGB));
 					fullscreen(program, source, &target, NULL, width, height, params);
 				}
 				stage.renderDirty = false;
@@ -1398,6 +1422,12 @@ namespace bgfx { namespace gx2
 
 		void bindFrameBuffer(FrameBufferHandle _handle)
 		{
+			Window* window = windowFor(_handle);
+			if (window)
+			{
+				if (m_context != window->target.context) { m_context = window->target.context; restore(); }
+				prepareWindow(*window);
+			}
 			bool restored = false;
 			if (isValid(_handle))
 				for (const Attachment& attachment : m_frameBuffers[_handle.idx].attachments)
@@ -1405,20 +1435,32 @@ namespace bgfx { namespace gx2
 			if (restored) restore();
 			m_currentFrameBuffer = _handle;
 			m_numColors = 0; m_hasDepth = false; m_depthReadOnly = false; m_stencilReadOnly = false;
-			if (!isValid(_handle))
+			if (window)
 			{
-				m_colors[0] = *m_target.color; m_numColors = 1;
-				if (isValid(m_mainSwapChain.depth))
+				m_colors[0] = windowColor(*window); m_numColors = 1;
+				if (window->swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER)
 				{
-					Texture& texture = m_textures[m_mainSwapChain.depth.idx];
+					m_colors[0].surface.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
+					GX2InitColorBufferRegs(&m_colors[0]);
+				}
+				if (window->colorImage) { touch(window->colorImage); touch(window->auxiliary); }
+				if (isValid(window->swapChain.depth))
+				{
+					Texture& texture = m_textures[window->swapChain.depth.idx];
 					if (restoreRenderTexture(texture, {0, 0, 1})) restore();
 					m_activeDepth = depthBuffer(texture, {0, 0, 1}); m_hasDepth = true;
 					if (texture.image) touch(texture.image);
 					if (texture.renderImage) touch(texture.renderImage);
 					if (texture.hiZ) touch(texture.hiZ);
 				}
-				else { m_activeDepth = m_depth; m_hasDepth = m_depthImage != NULL; if (m_depthImage) touch(m_depthImage); }
-				m_targetWidth = m_colors[0].surface.width; m_targetHeight = m_colors[0].surface.height;
+				else
+				{
+					m_activeDepth = window->depth; m_hasDepth = window->depthImage != NULL;
+					if (window->depthImage) touch(window->depthImage);
+					if (window->hiZ) touch(window->hiZ);
+				}
+				m_targetWidth = bx::max(1u, m_colors[0].surface.width >> m_colors[0].viewMip);
+				m_targetHeight = bx::max(1u, m_colors[0].surface.height >> m_colors[0].viewMip);
 			}
 			else
 			{
@@ -1433,7 +1475,23 @@ namespace bgfx { namespace gx2
 						m_depthReadOnly = 0 != (attachment.flags & BGFX_ATTACHMENT_READ_ONLY_DEPTH);
 						m_stencilReadOnly = 0 != (attachment.flags & BGFX_ATTACHMENT_READ_ONLY_STENCIL);
 					}
-					else m_colors[m_numColors++] = colorBuffer(texture, view, 0 != (attachment.flags & BGFX_ATTACHMENT_SRGB));
+					else
+					{
+						GX2ColorBuffer& color = m_colors[m_numColors++];
+						color = colorBuffer(texture, view, 0 != (attachment.flags & BGFX_ATTACHMENT_SRGB));
+						// GX2's native formats have fixed storage order. Route logical exports
+						// only on ordinary attachments; helper copies use storage order.
+						uint32_t swap;
+						switch (texture.format)
+						{
+						case TextureFormat::BGRA8: case TextureFormat::BGRA4: case TextureFormat::BGR5A1: swap = 1; break;
+						case TextureFormat::B5G6R5: swap = 2; break;
+						case TextureFormat::A8: swap = 3; break;
+						default: swap = (color.regs[1] >> 16) & 3; break;
+						}
+						// WUT GX2ColorBuffer ABI: regs[1] is CB_COLOR_INFO, COMP_SWAP[17:16].
+						color.regs[1] = (color.regs[1] & ~(3u << 16)) | (swap << 16);
+					}
 					m_targetWidth = bx::max(1u, texture.texture.surface.width >> attachment.mip);
 					m_targetHeight = bx::max(1u, texture.texture.surface.height >> attachment.mip);
 					if (texture.image) touch(texture.image);
@@ -1455,35 +1513,41 @@ namespace bgfx { namespace gx2
 		void markRendered(Texture& _texture, const RenderView& _view)
 		{
 			_texture.arrayDirty = true;
-			for (RenderView& view : _texture.rendered)
-				if (view.mip == _view.mip && view.layer == _view.layer && view.count == _view.count) { view.autoMips |= _view.autoMips; return; }
-			_texture.rendered.push_back(_view);
+			RenderView latest = _view;
+			for (auto it = _texture.rendered.begin(); it != _texture.rendered.end(); ++it)
+				if (it->mip == _view.mip && it->layer == _view.layer && it->count == _view.count)
+				{
+					latest.autoMips |= it->autoMips;
+					_texture.rendered.erase(it);
+					break;
+				}
+			// Preserve last-writer order for overlapping mutable-sRGB layer ranges.
+			_texture.rendered.push_back(latest);
 		}
 
 		void finishRenderPass()
 		{
 			uint32_t colorIndex = 0;
-			if (isValid(m_currentFrameBuffer))
+			Window* window = windowFor(m_currentFrameBuffer);
+			if (!window)
 				for (const Attachment& attachment : m_frameBuffers[m_currentFrameBuffer.idx].attachments)
 				{
 					Texture& texture = m_textures[attachment.handle.idx];
 					const bool depth = bimg::isDepth(bimg::TextureFormat::Enum(texture.format));
 					const bool written = depth ? m_depthWritten : 0 != (m_colorWritten & (1u << colorIndex++));
 					if (!written) continue;
-					Block* block = texture.renderImage ? texture.renderImage : texture.image;
-					if (block) GX2Invalidate(depth ? GX2_INVALIDATE_MODE_DEPTH_BUFFER : GX2_INVALIDATE_MODE_COLOR_BUFFER, block->data, block->size);
-					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, {attachment.mip, attachment.layer, attachment.numLayers, 0 != (attachment.flags & BGFX_ATTACHMENT_AUTO_GEN_MIPS)});
+					invalidateTexture(texture, depth ? GX2_INVALIDATE_MODE_DEPTH_BUFFER : GX2_INVALIDATE_MODE_COLOR_BUFFER, true);
+					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, {attachment.mip, attachment.layer, attachment.numLayers, 0 != (attachment.flags & BGFX_ATTACHMENT_AUTO_GEN_MIPS), !depth && 0 != (uint32_t(m_colors[colorIndex-1].surface.format) & 0x400)});
 				}
-			else if (m_depthWritten)
+			else
 			{
-				if (isValid(m_mainSwapChain.depth))
+				window->colorDirty |= m_colorWritten != 0;
+				if (m_depthWritten && isValid(window->swapChain.depth))
 				{
-					Texture& texture = m_textures[m_mainSwapChain.depth.idx];
-					Block* block = texture.renderImage ? texture.renderImage : texture.image;
-					if (block) GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, block->data, block->size);
+					Texture& texture = m_textures[window->swapChain.depth.idx];
+					invalidateTexture(texture, GX2_INVALIDATE_MODE_DEPTH_BUFFER, true);
 					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, {0, 0, 1});
 				}
-				else GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, m_depthImage->data, m_depthImage->size);
 			}
 			m_colorWritten = 0; m_depthWritten = false;
 		}
@@ -1513,8 +1577,10 @@ namespace bgfx { namespace gx2
 				GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE);
 			if (_stencil) GX2SetStencilMask(0xff, 0xff, 0, 0xff, 0xff, 0);
 			GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, _color != NULL); channelMasks(15, _color ? 1 : 0);
-			GX2Sampler sampler; GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_CLAMP, _depth ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR);
-			GX2InitSamplerZMFilter(&sampler, _depth ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR, GX2_TEX_MIP_FILTER_MODE_NONE); GX2InitSamplerLOD(&sampler, 0, 0, 0);
+			const uint32_t type = uint32_t(_source.surface.format) & 0x300;
+			const bool point = _depth != NULL || type == 0x100 || type == 0x300;
+			GX2Sampler sampler; GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_CLAMP, point ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR);
+			GX2InitSamplerZMFilter(&sampler, point ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR, GX2_TEX_MIP_FILTER_MODE_NONE); GX2InitSamplerLOD(&sampler, 0, 0, 0);
 			GX2SetPixelSampler(&sampler, 0); GX2SetPixelTexture(&_source, 0);
 			if (_stencil) { GX2SetPixelSampler(&sampler, 1); GX2SetPixelTexture(_stencil, 1); }
 			if (_params) updateUniform(m_uniformReg.find("u_mipGen")->m_handle.idx, _params, 16);
@@ -1573,25 +1639,26 @@ namespace bgfx { namespace gx2
 			Program& program = m_programs[m_mipGen->m_program[volume ? 2 : array ? 1 : 0].idx];
 			const bool cube = surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE;
 			if (cube) cubeArrayView(_texture);
-			restore();
 			for (uint32_t mip = _view.mip+1; mip < surface.mipLevels; ++mip)
 			{
 				const uint32_t width = bx::max(1u, surface.width >> mip), height = bx::max(1u, surface.height >> mip);
 				const uint32_t first = volume ? 0 : _view.layer, count = volume ? bx::max(1u, surface.depth >> mip) : _view.count;
+				if (cube || mip == uint32_t(_view.mip)+1) restore();
 				beginBatch();
 				for (uint32_t slice = first; slice < first+count; ++slice)
 				{
 					GX2Texture source = cube ? _texture.arrayView : _texture.texture; source.viewFirstMip = mip-1; source.viewNumMips = 1;
 					source.compMap = GX2_COMP_MAP(0, 1, 2, 3); // Filter storage channels, including BGRA.
+					uint32_t comp; source.surface.format = textureFormat(_texture.format, _view.srgb, comp);
 					if (!volume) { source.surface.dim = array ? GX2_SURFACE_DIM_TEXTURE_2D_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D; source.viewFirstSlice = slice; source.viewNumSlices = 1; }
 					GX2InitTextureRegs(&source);
-					GX2ColorBuffer dest = {}; dest.surface = surface; dest.viewMip = mip; dest.viewFirstSlice = slice; dest.viewNumSlices = 1; GX2InitColorBufferRegs(&dest);
+					GX2ColorBuffer dest = {}; dest.surface = surface; dest.surface.format = source.surface.format; dest.viewMip = mip; dest.viewFirstSlice = slice; dest.viewNumSlices = 1; GX2InitColorBufferRegs(&dest);
 					const float params[4] = {1.0f/width, 1.0f/height, (float(slice)+0.5f)/count, 0};
 					fullscreen(program, source, &dest, NULL, width, height, params);
 				}
 				endBatch();
-				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _texture.image->data, _texture.image->size);
-				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _texture.image->data, _texture.image->size);
+				invalidateTexture(_texture, GX2_INVALIDATE_MODE_COLOR_BUFFER);
+				invalidateTexture(_texture, GX2_INVALIDATE_MODE_TEXTURE);
 				if (cube)
 				{
 					for (uint32_t slice = first; slice < first+count; ++slice) GX2CopySurface(&surface, mip, slice, &_texture.arrayView.surface, mip, slice);
@@ -1622,15 +1689,23 @@ namespace bgfx { namespace gx2
 				}
 				else if (_texture.renderSurface.aa != GX2_AA_MODE1X)
 				{
-					GX2ColorBuffer color = colorBuffer(_texture, view);
+					GX2ColorBuffer color = colorBuffer(_texture, view, view.srgb);
 					if (_texture.flags & BGFX_TEXTURE_MSAA_SAMPLE) GX2ExpandAAColorBuffer(&color);
-					else GX2ResolveAAColorBuffer(&color, &_texture.texture.surface, view.mip, view.layer);
+					else
+					{
+						GX2Surface destination = _texture.texture.surface; uint32_t comp;
+						destination.format = textureFormat(_texture.format, view.srgb, comp);
+						GX2ResolveAAColorBuffer(&color, &destination, view.mip, view.layer);
+					}
 					helperWrites = true;
 				}
 			}
 			if (helperWrites)
-				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _texture.texture.surface.image, _texture.image ? _texture.image->size : _texture.texture.surface.imageSize);
-			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _texture.texture.surface.image, _texture.image ? _texture.image->size : _texture.texture.surface.imageSize);
+			{
+				_texture.arrayDirty = true;
+				invalidateTexture(_texture, GX2_INVALIDATE_MODE_COLOR_BUFFER);
+			}
+			invalidateTexture(_texture, GX2_INVALIDATE_MODE_TEXTURE);
 			for (const RenderView& view : _texture.rendered) generateMips(_texture, view);
 			_texture.rendered.clear();
 			if (_texture.image) touch(_texture.image);
@@ -1685,20 +1760,22 @@ namespace bgfx { namespace gx2
 		void transferWritten(Texture& _texture, uint8_t _mip, uint16_t _slice, uint16_t _count)
 		{
 			_texture.arrayDirty = true;
-			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _texture.texture.surface.image, _texture.image ? _texture.image->size : _texture.texture.surface.imageSize);
-			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _texture.texture.surface.image, _texture.image ? _texture.image->size : _texture.texture.surface.imageSize);
+			invalidateTexture(_texture, GX2_INVALIDATE_MODE_COLOR_BUFFER);
+			invalidateTexture(_texture, GX2_INVALIDATE_MODE_TEXTURE);
 			for (uint32_t slice = _slice; slice < uint32_t(_slice)+_count; ++slice) _texture.levels[_mip].slices[slice].renderDirty = _texture.renderImage != NULL;
 			if (_texture.image) touch(_texture.image);
 		}
 
 		bool transferScreen(FrameBufferHandle _handle, GX2Surface& _surface, uint32_t& _mip, uint32_t& _slice, TextureFormat::Enum& _format)
 		{
-			if (isValid(_handle)) { unsupported("additional window screenshots"); return false; }
-			if (!m_target.color) return false;
-			_surface = m_target.color->surface; _mip = m_target.color->viewMip; _slice = m_target.color->viewFirstSlice;
+			Window* window = windowFor(_handle);
+			if (!window || !window->target.color) return false;
+			prepareWindow(*window); resolveWindow(*window);
+			const GX2ColorBuffer& color = *window->target.color;
+			_surface = color.surface; _mip = color.viewMip; _slice = color.viewFirstSlice;
+			if (window->swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER) _surface.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
 			_format = TextureFormat::RGBA8;
-			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _surface.image, _surface.imageSize);
-			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _surface.image, _surface.imageSize);
+			if (_surface.aa == GX2_AA_MODE1X) GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _surface.image, _surface.imageSize);
 			return true;
 		}
 
@@ -1736,13 +1813,6 @@ namespace bgfx { namespace gx2
 				unsupported("native multisample surface blit (prepare a single-sample representation)");
 				return;
 			}
-			// Native copies do not convert formats. In particular, do not quietly turn
-			// a UNORM/SRGB mismatch into a shader-assisted color-space conversion.
-			if (_src.format != _dst.format)
-			{
-				unsupported("native surface blit between different GX2 formats");
-				return;
-			}
 			if (!(_srcX | _srcY | _dstX | _dstY)
 			&& srcWidth == dstWidth && srcHeight == dstHeight
 			&& _width == srcWidth && _height == srcHeight)
@@ -1763,7 +1833,7 @@ namespace bgfx { namespace gx2
 		}
 
 		void transferQueueSurface(const GX2Surface& _source, uint32_t _mip,
-			uint32_t _slice, TextureFormat::Enum _format, TransferOutput _output)
+			uint32_t _slice, TextureFormat::Enum _format, TransferOutput _output, const GX2ColorBuffer* _aaSource = NULL)
 		{
 			GX2Surface staging = transferLinear(_source.format,
 				bx::max(1u, _source.width >> _mip), bx::max(1u, _source.height >> _mip));
@@ -1772,7 +1842,12 @@ namespace bgfx { namespace gx2
 			// is in Block, never in the GPU destination allocation.
 			DCInvalidateRange(block->data, block->size);
 			staging.image = block->data;
-			transferCopy(_source, _mip, _slice, 0, 0, staging, 0, 0, 0, 0,
+			if (_aaSource && _source.aa != GX2_AA_MODE1X)
+			{
+				GX2ColorBuffer source = *_aaSource; source.surface.format = _source.format;
+				GX2InitColorBufferRegs(&source); GX2ResolveAAColorBuffer(&source, &staging, 0, 0);
+			}
+			else transferCopy(_source, _mip, _slice, 0, 0, staging, 0, 0, 0, 0,
 				staging.width, staging.height, _format);
 			// Copy uses a GPU output cache; retirement must cover its publication too.
 			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, block->data, block->size);
@@ -1798,7 +1873,7 @@ namespace bgfx { namespace gx2
 			// publish F's result before its render semaphore is released (see .md).
 			output.deadline = m_transferFrame + 1;
 			transferQueueSurface(source, _mip, _layer, texture.format, output);
-			if (m_target.context) restore();
+			if (m_context) restore();
 		}
 
 
@@ -1811,8 +1886,8 @@ namespace bgfx { namespace gx2
 			TransferOutput output;
 			output.kind = TransferOutput::ScreenShot;
 			output.path.assign(_filePath, _filePath+bx::strLen(_filePath)+1);
-			transferQueueSurface(source, mip, slice, format, output);
-			if (m_target.context) restore();
+			transferQueueSurface(source, mip, slice, format, output, windowFor(_handle)->target.color);
+			if (m_context) restore();
 		}
 
 		// Call after all ordinary draws and debug text, once per submit, also when
@@ -1829,8 +1904,8 @@ namespace bgfx { namespace gx2
 				{
 					TransferOutput output;
 					output.kind = TransferOutput::CaptureFrame;
-					transferQueueSurface(source, mip, slice, format, output);
-					if (m_target.context) restore();
+					transferQueueSurface(source, mip, slice, format, output, m_mainWindow.target.color);
+					if (m_context) restore();
 				}
 			}
 			else if (m_captureRequested)
@@ -1848,9 +1923,8 @@ namespace bgfx { namespace gx2
 			m_captureActive = false;
 		}
 
-		// endFrame before its existing flush/seal branch, before renderSemPost.
-		// Also poll at submit start, before collect(). _shutdown follows the existing
-		// GX2DrawDone + seal and drains callbacks before m_allocations is released.
+		// Publish retired snapshots before the public read readiness frame. Shutdown
+		// drains callbacks after its one GPU drain and before allocations are freed.
 		void transferPublish(bool _shutdown = false)
 		{
 			OSTime completed = GX2GetRetiredTimeStamp();
@@ -1911,6 +1985,42 @@ namespace bgfx { namespace gx2
 			if (_shutdown) transferEndCapture();
 		}
 
+		// Ex copies require complete BC blocks. Repack encoded edge blocks on GPU
+		// when source/destination mips do not share the same complete dimensions.
+		void transferBcEdge(const BlitItem& _blit, const GX2Surface& _source, GX2Surface& _destination,
+			uint32_t _width, uint32_t _height, uint32_t _count, TextureFormat::Enum _format)
+		{
+			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(_format));
+			const uint32_t srcWidth = bx::max(1u, _source.width >> _blit.m_srcMip), srcHeight = bx::max(1u, _source.height >> _blit.m_srcMip);
+			const uint32_t dstWidth = bx::max(1u, _destination.width >> _blit.m_dstMip), dstHeight = bx::max(1u, _destination.height >> _blit.m_dstMip);
+			const bool fullSource = _blit.m_srcX+bx::alignUp(_width, 4) > srcWidth || _blit.m_srcY+bx::alignUp(_height, 4) > srcHeight;
+			for (uint32_t slice = 0; slice < _count; ++slice)
+			{
+				GX2Surface source = transferLinear(_source.format, fullSource ? srcWidth : bx::alignUp(_width, 4), fullSource ? srcHeight : bx::alignUp(_height, 4));
+				GX2Surface destination = transferLinear(_destination.format, dstWidth, dstHeight);
+				Block* src = gpuBufferAllocate(source.imageSize, source.alignment);
+				Block* dst = gpuBufferAllocate(destination.imageSize, destination.alignment);
+				DCInvalidateRange(src->data, src->size); DCInvalidateRange(dst->data, dst->size);
+				source.image = src->data; destination.image = dst->data;
+				transferCopy(_source, _blit.m_srcMip, _blit.m_srcZ+slice, fullSource ? 0 : _blit.m_srcX, fullSource ? 0 : _blit.m_srcY,
+					source, 0, 0, 0, 0, source.width, source.height, _format);
+				gpuCopyWritten(src);
+				if (_blit.m_dstX || _blit.m_dstY || _width != dstWidth || _height != dstHeight)
+				{
+					GX2CopySurface(&_destination, _blit.m_dstMip, _blit.m_dstZ+slice, &destination, 0, 0);
+					gpuCopyWritten(dst);
+				}
+				const uint32_t srcPitch = GX2GetSurfaceMipPitch(&source, 0)*info.blockSize;
+				const uint32_t dstPitch = GX2GetSurfaceMipPitch(&destination, 0)*info.blockSize;
+				const uint32_t srcOffset = fullSource ? (_blit.m_srcY/4)*srcPitch+(_blit.m_srcX/4)*info.blockSize : 0;
+				const uint32_t dstOffset = (_blit.m_dstY/4)*dstPitch+(_blit.m_dstX/4)*info.blockSize;
+				gpuCopyRows(src, srcOffset, srcPitch, dst, dstOffset, dstPitch, calcTextureRegionPitch(_format, _width), calcTextureRegionNumRows(_format, _height));
+				gpuCopyWritten(dst);
+				GX2CopySurface(&destination, 0, 0, &_destination, _blit.m_dstMip, _blit.m_dstZ+slice);
+				retire(src); retire(dst);
+			}
+		}
+
 		void transferTextureBlit(const BlitItem& _blit)
 		{
 			Texture& src = m_textures[_blit.m_src.idx];
@@ -1918,12 +2028,25 @@ namespace bgfx { namespace gx2
 			const uint16_t count = bx::max<uint16_t>(1, _blit.m_depth);
 			GX2Surface source = transferSource(src, _blit.m_srcMip, _blit.m_srcZ, count);
 			GX2Surface destination = transferDestination(dst, _blit.m_dstMip, _blit.m_dstZ, count, {int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), _blit.m_width, _blit.m_height});
+			// bgfx blits preserve stored values, including between UNORM/sRGB views.
+			source.format = GX2SurfaceFormat(uint32_t(source.format) & ~0x400u);
+			destination.format = source.format;
 			const uint32_t width = bx::min<uint32_t>(_blit.m_width,
 				bx::max(1u, source.width >> _blit.m_srcMip)-_blit.m_srcX,
 				bx::max(1u, destination.width >> _blit.m_dstMip)-_blit.m_dstX);
 			const uint32_t height = bx::min<uint32_t>(_blit.m_height,
 				bx::max(1u, source.height >> _blit.m_srcMip)-_blit.m_srcY,
 				bx::max(1u, destination.height >> _blit.m_dstMip)-_blit.m_dstY);
+			const bool full = !(_blit.m_srcX | _blit.m_srcY | _blit.m_dstX | _blit.m_dstY)
+				&& width == bx::max(1u, source.width >> _blit.m_srcMip) && height == bx::max(1u, source.height >> _blit.m_srcMip)
+				&& width == bx::max(1u, destination.width >> _blit.m_dstMip) && height == bx::max(1u, destination.height >> _blit.m_dstMip);
+			if (!full && bimg::isCompressed(bimg::TextureFormat::Enum(src.format)) && ((width | height) & 3))
+			{
+				if ((_blit.m_srcX | _blit.m_srcY | _blit.m_dstX | _blit.m_dstY) & 3) { unsupported("BC blit origin must address complete compressed blocks"); return; }
+				transferBcEdge(_blit, source, destination, width, height, count, src.format);
+				transferWritten(dst, _blit.m_dstMip, _blit.m_dstZ, count);
+				return;
+			}
 			for (uint16_t slice = 0; slice < count; ++slice)
 				transferCopy(source, _blit.m_srcMip, _blit.m_srcZ+slice, _blit.m_srcX, _blit.m_srcY,
 					destination, _blit.m_dstMip, _blit.m_dstZ+slice, _blit.m_dstX, _blit.m_dstY,
@@ -1932,12 +2055,8 @@ namespace bgfx { namespace gx2
 		}
 
 
-		// Call outside a display list. The caller closes/finishes the previous pass,
-		// groups consecutive blits here, then restore/bind/viewport/beginBatch once.
-
-		// In submit, construct BlitState immediately after Frame::sort(). At each
-		// view boundary call this before its first draw and before view clear, as the
-		// other pinned backends do. At end use view-order-independent drain below.
+		// Transfer each view's blits before its clear/draws. Native helpers run
+		// outside the display list and share one state restoration for the group.
 		bool transferBlits(BlitState& _state, uint16_t _view)
 		{
 			if (!_state.hasItem(_view)) return false;
@@ -1962,13 +2081,13 @@ namespace bgfx { namespace gx2
 
 		void restore()
 		{
-			GX2SetContextState(m_target.context);
+			GX2SetContextState(m_context);
 			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
 			GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
 			GX2SetPolygonControl(GX2_FRONT_FACE_CCW, FALSE, FALSE, FALSE, GX2_POLYGON_MODE_TRIANGLE, GX2_POLYGON_MODE_TRIANGLE, FALSE, FALSE, FALSE);
 			GX2SetAlphaTest(FALSE, GX2_COMPARE_FUNC_ALWAYS, 0.0f);
 			GX2SetAlphaToMask(FALSE, GX2_ALPHA_TO_MASK_MODE_NON_DITHERED);
-			GX2SetLineWidth(1.0f);
+			GX2SetLineWidth(1.0f); GX2SetPointLimits(1.0f, 255.0f);
 			m_depthControl = {};
 			GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
 			m_cachedState = UINT64_MAX;
@@ -1978,7 +2097,7 @@ namespace bgfx { namespace gx2
 			m_boundFetch = NULL;
 			bx::memSet(m_boundAttributes, 0, sizeof(m_boundAttributes));
 			bx::memSet(m_boundTextures, 0, sizeof(m_boundTextures));
-			m_borderValid = 0;
+			m_borderValid[0] = m_borderValid[1] = 0;
 
 		}
 
@@ -2224,11 +2343,11 @@ namespace bgfx { namespace gx2
 						s_blend[(factors >> 8) & 15], s_blend[(factors >> 12) & 15], s_equation[eqAlpha]);
 				}
 				GX2SetColorControl(GX2_LOGIC_OP_COPY, blendMask, FALSE, m_numColors != 0);
-				const uint32_t mask = (_state & BGFX_STATE_WRITE_R ? 1 : 0) | (_state & BGFX_STATE_WRITE_G ? 2 : 0)
-					| (_state & BGFX_STATE_WRITE_B ? 4 : 0) | (_state & BGFX_STATE_WRITE_A ? 8 : 0);
+				const uint32_t mask = colorWriteMask(_state);
 				channelMasks(mask, (1u << m_numColors)-1);
 				GX2SetAlphaToMask(0 != (_state & BGFX_STATE_BLEND_ALPHA_TO_COVERAGE), GX2_ALPHA_TO_MASK_MODE_NON_DITHERED);
-				GX2SetPointSize(float((_state & BGFX_STATE_POINT_SIZE_MASK) >> BGFX_STATE_POINT_SIZE_SHIFT), float((_state & BGFX_STATE_POINT_SIZE_MASK) >> BGFX_STATE_POINT_SIZE_SHIFT));
+				const float pointSize = float(bx::max<uint64_t>(1, (_state & BGFX_STATE_POINT_SIZE_MASK) >> BGFX_STATE_POINT_SIZE_SHIFT));
+				GX2SetPointSize(pointSize, pointSize);
 				m_cachedState = _state; m_wireframe = _wireframe; m_cachedStencil = _stencil;
 			}
 			if (invalid || m_cachedRgba != _rgba)
@@ -2253,7 +2372,11 @@ namespace bgfx { namespace gx2
 				const bool border = (flags & BGFX_SAMPLER_U_MASK) == BGFX_SAMPLER_U_BORDER
 					|| (flags & BGFX_SAMPLER_V_MASK) == BGFX_SAMPLER_V_BORDER || (flags & BGFX_SAMPLER_W_MASK) == BGFX_SAMPLER_W_BORDER;
 				const float* color = _palette[(flags & BGFX_SAMPLER_BORDER_COLOR_MASK) >> BGFX_SAMPLER_BORDER_COLOR_SHIFT];
-				const bool borderChanged = border && (!(m_borderValid & (1u << ii)) || 0 != bx::memCmp(m_borderColors[ii], color, 16));
+				const bool vertexBorderChanged = border && m_boundProgram->vertex->samplerDimensions[ii]
+					&& (!(m_borderValid[0] & (1u << ii)) || 0 != bx::memCmp(m_borderColors[0][ii], color, 16));
+				const bool pixelBorderChanged = border && m_boundProgram->fragment->samplerDimensions[ii]
+					&& (!(m_borderValid[1] & (1u << ii)) || 0 != bx::memCmp(m_borderColors[1][ii], color, 16));
+				const bool borderChanged = vertexBorderChanged || pixelBorderChanged;
 				GX2TexBorderType borderType = GX2_TEX_BORDER_TYPE_VARIABLE;
 				if (color[0] == 0 && color[1] == 0 && color[2] == 0)
 				{
@@ -2270,7 +2393,7 @@ namespace bgfx { namespace gx2
 					const uint32_t faces = cube && (dimension == TextureDimension::DimensionCube || dimension == TextureDimension::DimensionCubeArray) ? 6 : 1;
 					view.viewFirstSlice = uint32_t(bind.m_firstLayer)*faces;
 					view.viewNumSlices = bx::min<uint32_t>(uint32_t(bind.m_numLayers)*faces, view.surface.depth-view.viewFirstSlice);
-					if (flags & BGFX_SAMPLER_SRGB) view.surface.format = textureFormat(texture.format, true, view.compMap);
+					if (texture.flags & BGFX_TEXTURE_SRGB_MUTABLE) view.surface.format = textureFormat(texture.format, 0 != (flags & BGFX_SAMPLER_SRGB), view.compMap);
 					if (flags & BGFX_SAMPLER_SAMPLE_STENCIL)
 					{
 						view.surface.format = texture.format == TextureFormat::D32FS8 ? GX2_SURFACE_FORMAT_UINT_G8_X24 : GX2_SURFACE_FORMAT_UINT_X24_G8;
@@ -2284,7 +2407,7 @@ namespace bgfx { namespace gx2
 						clamps[(flags & BGFX_SAMPLER_V_MASK) >> BGFX_SAMPLER_V_SHIFT], clamps[(flags & BGFX_SAMPLER_W_MASK) >> BGFX_SAMPLER_W_SHIFT]);
 					GX2InitSamplerXYFilter(&sampler, flags & BGFX_SAMPLER_MAG_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
 						flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
-						flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? GX2_TEX_ANISO_RATIO_4_TO_1 : GX2_TEX_ANISO_RATIO_NONE);
+						flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? m_anisotropy : GX2_TEX_ANISO_RATIO_NONE);
 					GX2InitSamplerZMFilter(&sampler, flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR,
 						view.viewNumMips <= 1 ? GX2_TEX_MIP_FILTER_MODE_NONE : flags & BGFX_SAMPLER_MIP_POINT ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
 					const float maxLod = float(view.viewNumMips-1);
@@ -2300,53 +2423,208 @@ namespace bgfx { namespace gx2
 					GX2SetPixelSampler(&sampler, ii); GX2SetVertexSampler(&sampler, ii);
 					m_boundTextures[ii] = &texture.texture; m_boundBindings[ii] = bind; m_boundDimensions[ii] = encodedDimension;
 				}
-				if (borderChanged)
+				if (vertexBorderChanged)
 				{
-					if (borderType == GX2_TEX_BORDER_TYPE_VARIABLE)
-					{
-						GX2SetPixelSamplerBorderColor(ii, color[0], color[1], color[2], color[3]);
-						GX2SetVertexSamplerBorderColor(ii, color[0], color[1], color[2], color[3]);
-					}
-					bx::memCopy(m_borderColors[ii], color, 16); m_borderValid |= 1u << ii;
+					if (borderType == GX2_TEX_BORDER_TYPE_VARIABLE) GX2SetVertexSamplerBorderColor(ii, color[0], color[1], color[2], color[3]);
+					bx::memCopy(m_borderColors[0][ii], color, 16); m_borderValid[0] |= 1u << ii;
+				}
+				if (pixelBorderChanged)
+				{
+					if (borderType == GX2_TEX_BORDER_TYPE_VARIABLE) GX2SetPixelSamplerBorderColor(ii, color[0], color[1], color[2], color[3]);
+					bx::memCopy(m_borderColors[1][ii], color, 16); m_borderValid[1] |= 1u << ii;
 				}
 				if (texture.image) touch(texture.image);
 				if (texture.arrayImage && dimension == TextureDimension::Dimension2DArray) touch(texture.arrayImage);
 			}
 		}
 
-		void depthBuffer(uint32_t _width, uint32_t _height)
+		Window* windowFor(FrameBufferHandle _handle)
 		{
-			if (isValid(m_mainSwapChain.depth) || m_mainSwapChain.formatDepthStencil == TextureFormat::Count)
+			if (!isValid(_handle)) return &m_mainWindow;
+			Window& window = m_frameBuffers[_handle.idx].window;
+			return window.swapChain.nwh ? &window : NULL;
+		}
+
+		bool frameBufferAvailable(FrameBufferHandle _handle)
+		{
+			Window* window = windowFor(_handle);
+			return !window || window->target.color;
+		}
+
+		void releaseWindowColor(Window& _window)
+		{
+			if (_window.colorImage)
 			{
-				if (m_depthImage) { GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, m_depthImage->data, m_depthImage->size); retire(m_depthImage); }
-				m_depth = {}; return;
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _window.colorImage->data, _window.colorImage->size);
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _window.auxiliary->data, _window.auxiliary->size);
+				retire(_window.colorImage); retire(_window.auxiliary);
+			}
+			_window.color = {}; _window.colorDirty = false;
+		}
+
+		void releaseWindowDepth(Window& _window)
+		{
+			if (_window.depthImage)
+			{
+				GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, _window.depthImage->data, _window.depthImage->size);
+				retire(_window.depthImage); retire(_window.hiZ);
+			}
+			_window.depth = {};
+		}
+
+		void destroyWindow(Window& _window)
+		{
+			releaseWindowColor(_window); releaseWindowDepth(_window);
+			_window.target = {}; _window.used = false; _window.swapChain.nwh = NULL;
+		}
+
+		GX2ColorBuffer& windowColor(Window& _window)
+		{
+			return _window.colorImage ? _window.color : *_window.target.color;
+		}
+
+		// Query every adapter once after lifecycle events, including the replacement
+		// main nwh from Frame::m_mainSwapChain. Do not retain copied callback tables.
+		bool queryWindow(Window& _window)
+		{
+			_window.target = {}; _window.used = false;
+			const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
+			if (!platform.query(platform.userData, &_window.target) || !_window.target.color || !_window.target.context)
+			{
+				_window.target = {};
+				return false;
+			}
+			return true;
+		}
+
+		FrameBufferHandle queryWindows(const SwapChain& _main)
+		{
+			m_mainWindow.swapChain = _main;
+			m_context = NULL;
+			FrameBufferHandle initial = BGFX_INVALID_HANDLE;
+			if (queryWindow(m_mainWindow)) m_context = m_mainWindow.target.context;
+			for (uint16_t ii = 0; ii < BGFX_CONFIG_MAX_FRAME_BUFFERS; ++ii)
+			{
+				Window& window = m_frameBuffers[ii].window;
+				if (window.swapChain.nwh && queryWindow(window) && !m_context)
+				{
+					m_context = window.target.context; initial.idx = ii;
+				}
+			}
+			return initial;
+		}
+
+		void prepareWindow(Window& _window)
+		{
+			const GX2ColorBuffer& borrowed = *_window.target.color;
+			const uint32_t requested = (_window.swapChain.flags & BGFX_SWAP_CHAIN_MSAA_MASK) >> BGFX_SWAP_CHAIN_MSAA_SHIFT;
+			if (requested > uint32_t(GX2_AA_MODE8X)) { unsupported("16x swap-chain MSAA"); return; }
+			const GX2AAMode aa = requested ? GX2AAMode(requested) : borrowed.surface.aa;
+			if (borrowed.surface.aa != GX2_AA_MODE1X && borrowed.surface.aa != aa)
+			{ unsupported("changing an adapter's multisample presentation target sample count"); return; }
+			const uint32_t width = bx::max(1u, borrowed.surface.width >> borrowed.viewMip);
+			const uint32_t height = bx::max(1u, borrowed.surface.height >> borrowed.viewMip);
+			if (aa != borrowed.surface.aa)
+			{
+				GX2ColorBuffer& color = _window.color;
+				if (!_window.colorImage || color.surface.width != width || color.surface.height != height
+				|| color.surface.format != borrowed.surface.format || color.surface.aa != aa)
+				{
+					releaseWindowColor(_window);
+					color.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D_MSAA;
+					color.surface.width = width; color.surface.height = height;
+					color.surface.depth = 1; color.surface.mipLevels = 1;
+					color.surface.format = borrowed.surface.format; color.surface.aa = aa;
+					color.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+					color.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+					GX2CalcSurfaceSizeAndAlignment(&color.surface);
+					_window.colorImage = allocate(color.surface.imageSize, color.surface.alignment);
+					DCInvalidateRange(_window.colorImage->data, _window.colorImage->size);
+					color.surface.image = _window.colorImage->data; color.viewNumSlices = 1;
+					uint32_t bytes, alignment; GX2CalcColorBufferAuxInfo(&color, &bytes, &alignment);
+					_window.auxiliary = allocate(bytes, alignment);
+					bx::memSet(_window.auxiliary->data, GX2_AUX_BUFFER_CLEAR_VALUE, bytes);
+					DCFlushRange(_window.auxiliary->data, bytes);
+					color.aaBuffer = _window.auxiliary->data; color.aaSize = bytes;
+					GX2InitColorBufferRegs(&color);
+				}
+			}
+			else if (_window.colorImage) releaseWindowColor(_window);
+
+			if (isValid(_window.swapChain.depth) || _window.swapChain.formatDepthStencil == TextureFormat::Count)
+			{
+				if (_window.depthImage) releaseWindowDepth(_window);
+				return;
 			}
 			uint32_t comp;
-			const GX2SurfaceFormat format = textureFormat(m_mainSwapChain.formatDepthStencil, false, comp);
-			const GX2AAMode aa = m_target.color->surface.aa;
-			if (m_depth.surface.width != _width || m_depth.surface.height != _height || m_depth.surface.format != format || m_depth.surface.aa != aa)
+			const GX2SurfaceFormat format = textureFormat(_window.swapChain.formatDepthStencil, false, comp);
+			GX2DepthBuffer& depth = _window.depth;
+			if (!_window.depthImage || depth.surface.width != width || depth.surface.height != height
+			|| depth.surface.format != format || depth.surface.aa != aa)
 			{
-				if (m_depthImage)
+				releaseWindowDepth(_window);
+				depth.surface.dim = aa == GX2_AA_MODE1X ? GX2_SURFACE_DIM_TEXTURE_2D : GX2_SURFACE_DIM_TEXTURE_2D_MSAA;
+				depth.surface.width = width; depth.surface.height = height;
+				depth.surface.depth = 1; depth.surface.mipLevels = 1;
+				depth.surface.format = format; depth.surface.aa = aa;
+				depth.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
+				depth.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+				GX2CalcSurfaceSizeAndAlignment(&depth.surface);
+				_window.depthImage = allocate(depth.surface.imageSize, depth.surface.alignment);
+				DCInvalidateRange(_window.depthImage->data, _window.depthImage->size);
+				depth.surface.image = _window.depthImage->data;
+				depth.viewNumSlices = 1; depth.depthClear = 1.0f;
+				uint32_t bytes, alignment; GX2CalcDepthBufferHiZInfo(&depth, &bytes, &alignment);
+				if (bytes)
 				{
-					GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, m_depthImage->data, m_depthImage->size);
-					retire(m_depthImage);
+					_window.hiZ = allocate(bytes, alignment); DCInvalidateRange(_window.hiZ->data, bytes);
+					depth.hiZPtr = _window.hiZ->data; depth.hiZSize = bytes;
 				}
-				m_depth = {};
-				m_depth.surface.dim = aa == GX2_AA_MODE1X ? GX2_SURFACE_DIM_TEXTURE_2D : GX2_SURFACE_DIM_TEXTURE_2D_MSAA;
-				m_depth.surface.aa = aa;
-				m_depth.surface.width = _width; m_depth.surface.height = _height;
-				m_depth.surface.depth = 1; m_depth.surface.mipLevels = 1;
-				m_depth.surface.format = format;
-				m_depth.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
-				m_depth.surface.tileMode = GX2_TILE_MODE_DEFAULT;
-				GX2CalcSurfaceSizeAndAlignment(&m_depth.surface);
-				m_depthImage = allocate(m_depth.surface.imageSize, m_depth.surface.alignment);
-				DCInvalidateRange(m_depthImage->data, m_depthImage->size);
-				m_depth.surface.image = m_depthImage->data;
-				m_depth.viewNumSlices = 1;
-				GX2InitDepthBufferRegs(&m_depth);
+				GX2InitDepthBufferRegs(&depth); GX2InitDepthBufferHiZEnable(&depth, depth.hiZPtr != NULL);
 			}
 		}
+
+		// Outside display lists, after debug draws, at presentation or first reader.
+		// Keep the multisample source intact: later partial draws retain all samples.
+		void resolveWindow(Window& _window)
+		{
+			if (!_window.colorDirty) return;
+			GX2ColorBuffer& source = windowColor(_window);
+			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, source.surface.image, source.surface.imageSize);
+			if (_window.colorImage)
+			{
+				GX2ColorBuffer& target = *_window.target.color;
+				GX2ColorBuffer color = source; GX2Surface destination = target.surface;
+				if (_window.swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER)
+				{
+					color.surface.format = destination.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
+					GX2InitColorBufferRegs(&color);
+				}
+				GX2ResolveAAColorBuffer(&color, &destination, target.viewMip, target.viewFirstSlice);
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, target.surface.image, target.surface.imageSize);
+				touch(_window.colorImage); touch(_window.auxiliary);
+				restore();
+			}
+			_window.colorDirty = false;
+		}
+
+		bool preparePresent()
+		{
+			bool present = false;
+			if (m_mainWindow.used) { resolveWindow(m_mainWindow); present = true; }
+			for (FrameBuffer& fb : m_frameBuffers)
+				if (fb.window.used) { resolveWindow(fb.window); present = true; }
+			return present;
+		}
+
+		void presentWindow(Window& _window)
+		{
+			if (!_window.used) return;
+			const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
+			platform.present(platform.userData);
+			_window.used = false;
+		}
+
 
 		void viewport(const View& _view)
 		{
@@ -2376,13 +2654,33 @@ namespace bgfx { namespace gx2
 			{
 				endBatch();
 				for (uint32_t ii = 0; ii < m_numColors; ++ii)
-					if (colorMask & (1u << ii)) GX2ClearColor(&m_colors[ii], colors[ii][0], colors[ii][1], colors[ii][2], colors[ii][3]);
+					if (colorMask & (1u << ii))
+					{
+						GX2ColorBuffer target = m_colors[ii];
+						float* color = colors[ii];
+						// Native clear implementations may rebuild regs: clear in storage order.
+						if (!windowFor(m_currentFrameBuffer))
+						{
+							uint32_t colorIndex = 0;
+							for (const Attachment& attachment : m_frameBuffers[m_currentFrameBuffer.idx].attachments)
+							{
+								const TextureFormat::Enum format = m_textures[attachment.handle.idx].format;
+								if (bimg::isDepth(bimg::TextureFormat::Enum(format))) continue;
+								if (colorIndex++ != ii) continue;
+								if (format == TextureFormat::BGRA8 || format == TextureFormat::BGRA4 || format == TextureFormat::BGR5A1 || format == TextureFormat::B5G6R5) bx::swap(color[0], color[2]);
+								else if (format == TextureFormat::A8) { color[0] = color[3]; color[1] = color[2] = color[3] = 0; }
+								break;
+							}
+						}
+						GX2InitColorBufferRegs(&target); GX2ClearColor(&target, color[0], color[1], color[2], color[3]);
+					}
 				if (m_hasDepth && depthFlags)
 				{
 					GX2ClearDepthStencilEx(&m_activeDepth, clear.m_depth, clear.m_stencil, depthFlags);
 					if (depthFlags & GX2_CLEAR_FLAGS_DEPTH) m_activeDepth.depthClear = clear.m_depth;
 					if (depthFlags & GX2_CLEAR_FLAGS_STENCIL) m_activeDepth.stencilClear = clear.m_stencil;
-					if (isValid(m_currentFrameBuffer))
+					Window* window = windowFor(m_currentFrameBuffer);
+					if (!window)
 						for (const Attachment& attachment : m_frameBuffers[m_currentFrameBuffer.idx].attachments)
 						{
 							Texture& texture = m_textures[attachment.handle.idx];
@@ -2390,12 +2688,12 @@ namespace bgfx { namespace gx2
 							if (depthFlags & GX2_CLEAR_FLAGS_DEPTH) texture.depthClear = clear.m_depth;
 							if (depthFlags & GX2_CLEAR_FLAGS_STENCIL) texture.stencilClear = clear.m_stencil;
 						}
-					else if (isValid(m_mainSwapChain.depth))
+					else if (isValid(window->swapChain.depth))
 					{
-						Texture& texture = m_textures[m_mainSwapChain.depth.idx];
+						Texture& texture = m_textures[window->swapChain.depth.idx];
 						texture.depthClear = m_activeDepth.depthClear; texture.stencilClear = m_activeDepth.stencilClear;
 					}
-					else m_depth = m_activeDepth;
+					else window->depth = m_activeDepth;
 				}
 				restore(); bindFrameBuffer(m_currentFrameBuffer); beginBatch(); viewport(_view);
 			}
@@ -2463,17 +2761,16 @@ namespace bgfx { namespace gx2
 			bx::memSet(stats.numPrims, 0, sizeof(stats.numPrims));
 			collect();
 			resolveOcclusion(_render); resolveGpuTimers(_render);
-			m_target = {};
-			if (!m_platform.query(m_platform.userData, &m_target) || !m_target.color || !m_target.context)
-			{ m_target = {}; transferCapture(0 != (_render->m_reset & BGFX_RESET_CAPTURE)); stats.cpuTimeEnd = bx::getHPCounter(); return; }
-			m_mainSwapChain = _render->m_mainSwapChain;
-			const uint32_t frameTimer = beginGpuTimer(BGFX_CONFIG_MAX_VIEWS, _render->m_frameNum);
+			const FrameBufferHandle initial = queryWindows(_render->m_mainSwapChain);
+			if (!m_context)
+			{ transferCapture(0 != (_render->m_reset & BGFX_RESET_CAPTURE)); stats.cpuTimeEnd = bx::getHPCounter(); return; }
+			m_anisotropy = (_render->m_reset & BGFX_RESET_MAXANISOTROPY) ? GX2_TEX_ANISO_RATIO_16_TO_1 : GX2_TEX_ANISO_RATIO_NONE;
+			m_frameGpuTimer = beginGpuTimer(BGFX_CONFIG_MAX_VIEWS, _render->m_frameNum);
 			uint32_t viewTimer = UINT32_MAX;
 			uploadTextures();
 			restore();
 			GX2SetSwapInterval((_render->m_reset & BGFX_RESET_VSYNC) ? 1 : 0);
-			depthBuffer(m_target.color->surface.width, m_target.color->surface.height);
-			bindFrameBuffer(BGFX_INVALID_HANDLE);
+			bindFrameBuffer(initial);
 			if (_render->m_iboffset) update(m_indexBuffers[_render->m_transientIb->handle.idx], 0, _render->m_iboffset, _render->m_transientIb->data, false, true);
 			if (_render->m_vboffset) update(m_vertexBuffers[_render->m_transientVb->handle.idx], 0, _render->m_vboffset, _render->m_transientVb->data, true, true);
 			_render->sort();
@@ -2487,10 +2784,13 @@ namespace bgfx { namespace gx2
 				SortKey key;
 				if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap)) { unsupported("compute dispatch"); continue; }
 				const View& renderView = _render->view(key.m_view);
+				if (!frameBufferAvailable(renderView.m_fbh)) continue;
 				if (view != key.m_view)
 				{
 					endViewTimer(_render, viewTimer); viewTimer = UINT32_MAX;
 					view = key.m_view;
+					Window* window = windowFor(renderView.m_fbh);
+					if (window) window->used = true;
 					transferBlits(blits, view);
 					if (m_currentFrameBuffer.idx != renderView.m_fbh.idx)
 					{
@@ -2534,8 +2834,15 @@ namespace bgfx { namespace gx2
 					const uint8_t mask = uint8_t(draw.m_sampleMask); GX2SetAAMask(mask, mask, mask, mask); m_sampleMask = draw.m_sampleMask;
 				}
 				state(draw.m_stateFlags, draw.m_stencil, draw.m_rgba, 0 != (_render->m_debug & BGFX_DEBUG_WIREFRAME));
-				if (draw.m_stateFlags & (BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A)) m_colorWritten |= (1u << m_numColors)-1;
-				m_depthWritten |= m_hasDepth && ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && draw.m_stencil));
+				const uint32_t colorMask = colorWriteMask(draw.m_stateFlags);
+				const uint32_t exports = ((const GX2PixelShader*)program.fragment->header->data)->regs.cb_shader_mask;
+				for (uint32_t target = 0; target < m_numColors; ++target)
+					if ((exports >> (target*4)) & colorMask) m_colorWritten |= 1u << target;
+				const uint32_t front = uint32_t(draw.m_stencil), back = draw.m_stencil >> 32 ? uint32_t(draw.m_stencil >> 32) : front;
+				const uint32_t ops = BGFX_STENCIL_OP_FAIL_S_MASK | BGFX_STENCIL_OP_FAIL_Z_MASK | BGFX_STENCIL_OP_PASS_Z_MASK;
+				const uint32_t keep = BGFX_STENCIL_OP_FAIL_S_KEEP | BGFX_STENCIL_OP_FAIL_Z_KEEP | BGFX_STENCIL_OP_PASS_Z_KEEP;
+				const bool stencilWrite = ((front | back) & BGFX_STENCIL_TEST_MASK) && ((front & ops) != keep || (back & ops) != keep);
+				m_depthWritten |= m_hasDepth && ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && stencilWrite));
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
 				vertexInput(program, draw);
@@ -2572,7 +2879,7 @@ namespace bgfx { namespace gx2
 			}
 			endViewTimer(_render, viewTimer);
 			endBatch(); finishRenderPass(); transferRemainingBlits(blits);
-			if (_render->m_debug & (BGFX_DEBUG_STATS | BGFX_DEBUG_IFH))
+			if (frameBufferAvailable(_render->m_debugFrameBuffer) && (_render->m_debug & (BGFX_DEBUG_STATS | BGFX_DEBUG_IFH)))
 			{
 				const TextVideoMem& target = *_render->m_textVideoMem;
 				m_statsText.resize(target.m_small, target.m_width*8, target.m_height*(target.m_small ? 8 : 16));
@@ -2582,14 +2889,15 @@ namespace bgfx { namespace gx2
 				m_statsText.printf(0, 2, 0x0f, "CPU: %.3f ms  GPU: %.3f ms", 1000.0*double(bx::getHPCounter()-stats.cpuTimeBegin)/stats.cpuTimerFreq, 1000.0*double(stats.gpuTimeEnd-stats.gpuTimeBegin)/stats.gpuTimerFreq);
 				dbgTextSubmit(this, _blitter, m_statsText, _render->m_debugFrameBuffer, _render->m_debugTextScale);
 			}
-			else if (_render->m_debug & BGFX_DEBUG_TEXT) dbgTextSubmit(this, _blitter, _render->m_textVideoMem, _render->m_debugFrameBuffer, _render->m_debugTextScale);
-			endGpuTimer(frameTimer);
+			else if (frameBufferAvailable(_render->m_debugFrameBuffer) && (_render->m_debug & BGFX_DEBUG_TEXT)) dbgTextSubmit(this, _blitter, _render->m_textVideoMem, _render->m_debugFrameBuffer, _render->m_debugTextScale);
 			transferCapture(0 != (_render->m_reset & BGFX_RESET_CAPTURE));
 			stats.cpuTimeEnd = bx::getHPCounter();
 		}
 
 		void dbgTextRenderBegin(TextVideoMemBlitter&, FrameBufferHandle _handle) override
 		{
+			Window* window = windowFor(_handle);
+			if (window) window->used = true;
 			restore(); bindFrameBuffer(_handle); beginBatch();
 			GX2SetViewport(0, 0, m_targetWidth, m_targetHeight, -1, 1);
 			GX2SetScissor(0, 0, m_targetWidth, m_targetHeight);
@@ -2644,6 +2952,7 @@ namespace bgfx { namespace gx2
 		std::vector<GpuTimerSample> m_pendingGpuTimers;
 		GpuTimerResult m_gpuTimerResults[BGFX_CONFIG_MAX_VIEWS + 1];
 		uint32_t m_maxGpuLatency = 0;
+		uint32_t m_frameGpuTimer = UINT32_MAX;
 
 		std::vector<TransferOutput> m_transferOutputs;
 		uint32_t m_transferFrame = 0;
@@ -2652,9 +2961,8 @@ namespace bgfx { namespace gx2
 		uint32_t m_captureWidth = 0, m_captureHeight = 0, m_capturePitch = 0;
 		TextureFormat::Enum m_captureFormat = TextureFormat::Unknown;
 
-		Gx2PlatformData m_platform;
-		SwapChain m_mainSwapChain;
-		Gx2Target m_target = {};
+		Window m_mainWindow;
+		GX2ContextState* m_context = NULL;
 		Buffer m_indexBuffers[BGFX_CONFIG_MAX_INDEX_BUFFERS];
 		Buffer m_vertexBuffers[BGFX_CONFIG_MAX_VERTEX_BUFFERS];
 		VertexLayout m_layouts[BGFX_CONFIG_MAX_VERTEX_LAYOUTS];
@@ -2671,8 +2979,6 @@ namespace bgfx { namespace gx2
 		bool m_hasDepth = false, m_depthReadOnly = false, m_stencilReadOnly = false, m_depthWritten = false;
 		std::vector<Block*> m_allocations, m_touched, m_retired, m_lists, m_uploads;
 		std::vector<Texture*> m_pendingTextures;
-		GX2DepthBuffer m_depth = {};
-		Block* m_depthImage = NULL;
 		Block* m_list = NULL;
 		Block* m_upload = NULL;
 		uint32_t m_uploadUsed = 0;
@@ -2691,8 +2997,9 @@ namespace bgfx { namespace gx2
 		const GX2Texture* m_boundTextures[16];
 		Binding m_boundBindings[16];
 		uint8_t m_boundDimensions[16];
-		float m_borderColors[16][4];
-		uint32_t m_borderValid = 0;
+		float m_borderColors[2][16][4];
+		uint32_t m_borderValid[2] = {};
+		GX2TexAnisoRatio m_anisotropy = GX2_TEX_ANISO_RATIO_NONE;
 	};
 
 	static RendererContextGX2* s_renderGX2;

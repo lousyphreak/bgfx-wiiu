@@ -137,6 +137,7 @@ namespace bgfx { namespace gx2
 	{
 		uint16_t mip, layer, count;
 		bool autoMips = false;
+		bool srgb = false;
 	};
 
 	struct Texture
@@ -164,8 +165,24 @@ namespace bgfx { namespace gx2
 		float depthClear = 1.0f;
 		uint32_t stencilClear = 0;
 	};
+	// Adapter targets are borrowed for this inline frame. Only Blocks are owned.
+	struct Window
+	{
+		SwapChain swapChain;
+		Gx2Target target = {};
+		GX2ColorBuffer color = {};
+		GX2DepthBuffer depth = {};
+		Block* colorImage = NULL;
+		Block* auxiliary = NULL;
+		Block* depthImage = NULL;
+		Block* hiZ = NULL;
+		bool used = false;
+		bool colorDirty = false;
+	};
+
 	struct FrameBuffer
 	{
+		Window window;
 		std::vector<Attachment> attachments;
 	};
 } }
