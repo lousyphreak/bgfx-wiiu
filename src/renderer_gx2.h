@@ -82,16 +82,29 @@ namespace bgfx { namespace gx2
 		uint16_t m_numPredefined = 0;
 	};
 
+	struct TextureStage
+	{
+		Block* block = NULL;
+		std::vector<Block*> spare;
+		Rect dirty = {};
+	};
+
+	struct TextureLevel
+	{
+		GX2Surface source = {};
+		std::vector<TextureStage> slices;
+	};
+
 	struct Texture
 	{
 		GX2Texture texture = {};
-		GX2Surface source = {};
 		Block* image = NULL;
-		Block* staging = NULL;
 		std::vector<Block*> spareImages;
-		std::vector<Block*> spareStaging;
-		uint32_t samplerFlags = 0;
-		uint8_t bytesPerPixel = 0;
+		std::vector<TextureLevel> levels;
+		uint64_t flags = 0;
+		TextureFormat::Enum format = TextureFormat::Unknown;
+		uint32_t mipOffset = 0;
+		bool pending = false;
 	};
 } }
 #endif

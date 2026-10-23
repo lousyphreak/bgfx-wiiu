@@ -63,6 +63,84 @@ namespace bgfx { namespace gx2
 		GX2_PRIMITIVE_MODE_LINES, GX2_PRIMITIVE_MODE_LINE_STRIP, GX2_PRIMITIVE_MODE_POINTS,
 	};
 
+	static GX2SurfaceFormat textureFormat(TextureFormat::Enum _format, bool _srgb, uint32_t& _compMap)
+	{
+		_compMap = GX2_COMP_MAP(0, 1, 2, 3);
+		if (_srgb)
+		{
+			if (_format == TextureFormat::RGBA8 || _format == TextureFormat::BGRA8)
+			{
+				if (_format == TextureFormat::BGRA8) _compMap = GX2_COMP_MAP(2, 1, 0, 3);
+				return GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
+			}
+			if (_format >= TextureFormat::BC1 && _format <= TextureFormat::BC3)
+				return GX2SurfaceFormat(uint32_t(GX2_SURFACE_FORMAT_SRGB_BC1) + uint32_t(_format)-uint32_t(TextureFormat::BC1));
+		}
+		switch (_format)
+		{
+		case TextureFormat::R8: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_UNORM_R8;
+		case TextureFormat::R8S: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_SNORM_R8;
+		case TextureFormat::R8I: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_SINT_R8;
+		case TextureFormat::R8U: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_UINT_R8;
+		case TextureFormat::R16: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_UNORM_R16;
+		case TextureFormat::R16S: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_SNORM_R16;
+		case TextureFormat::R16I: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_SINT_R16;
+		case TextureFormat::R16U: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_UINT_R16;
+		case TextureFormat::R16F: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_FLOAT_R16;
+		case TextureFormat::R32I: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_SINT_R32;
+		case TextureFormat::R32U: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_UINT_R32;
+		case TextureFormat::R32F: _compMap = GX2_COMP_MAP(0, 4, 4, 5); return GX2_SURFACE_FORMAT_FLOAT_R32;
+		case TextureFormat::RG8: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_UNORM_R8_G8;
+		case TextureFormat::RG8S: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_SNORM_R8_G8;
+		case TextureFormat::RG8I: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_SINT_R8_G8;
+		case TextureFormat::RG8U: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_UINT_R8_G8;
+		case TextureFormat::RG16: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_UNORM_R16_G16;
+		case TextureFormat::RG16S: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_SNORM_R16_G16;
+		case TextureFormat::RG16I: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_SINT_R16_G16;
+		case TextureFormat::RG16U: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_UINT_R16_G16;
+		case TextureFormat::RG16F: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_FLOAT_R16_G16;
+		case TextureFormat::RG32I: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_SINT_R32_G32;
+		case TextureFormat::RG32U: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_UINT_R32_G32;
+		case TextureFormat::RG32F: _compMap = GX2_COMP_MAP(0, 1, 4, 5); return GX2_SURFACE_FORMAT_FLOAT_R32_G32;
+		case TextureFormat::RGBA8: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+		case TextureFormat::RGBA8S: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SNORM_R8_G8_B8_A8;
+		case TextureFormat::RGBA8I: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SINT_R8_G8_B8_A8;
+		case TextureFormat::RGBA8U: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UINT_R8_G8_B8_A8;
+		case TextureFormat::RGBA16: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R16_G16_B16_A16;
+		case TextureFormat::RGBA16S: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SNORM_R16_G16_B16_A16;
+		case TextureFormat::RGBA16I: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SINT_R16_G16_B16_A16;
+		case TextureFormat::RGBA16U: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UINT_R16_G16_B16_A16;
+		case TextureFormat::RGBA16F: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_FLOAT_R16_G16_B16_A16;
+		case TextureFormat::RGBA32I: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SINT_R32_G32_B32_A32;
+		case TextureFormat::RGBA32U: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UINT_R32_G32_B32_A32;
+		case TextureFormat::RGBA32F: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_FLOAT_R32_G32_B32_A32;
+		case TextureFormat::A8: _compMap = GX2_COMP_MAP(5, 5, 5, 0); return GX2_SURFACE_FORMAT_UNORM_R8;
+		case TextureFormat::BGRA8: _compMap = GX2_COMP_MAP(2, 1, 0, 3); return GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+		case TextureFormat::BC1: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_BC1;
+		case TextureFormat::BC2: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_BC2;
+		case TextureFormat::BC3: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_BC3;
+		case TextureFormat::BC4: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_BC4;
+		case TextureFormat::BC5: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_BC5;
+		case TextureFormat::BC4S: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SNORM_BC4;
+		case TextureFormat::BC5S: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_SNORM_BC5;
+		case TextureFormat::R5G6B5: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R5_G6_B5;
+		case TextureFormat::RGBA4: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R4_G4_B4_A4;
+		case TextureFormat::RGB5A1: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R5_G5_B5_A1;
+		case TextureFormat::RGB10A2: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R10_G10_B10_A2;
+		case TextureFormat::RGB10A2U: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UINT_R10_G10_B10_A2;
+		case TextureFormat::RG11B10F: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_FLOAT_R11_G11_B10;
+		case TextureFormat::D16: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R16;
+		case TextureFormat::D24: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R24_X8;
+		case TextureFormat::D24S8: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_UNORM_R24_X8;
+		case TextureFormat::D24F: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_FLOAT_D24_S8;
+		case TextureFormat::D32F: _compMap = GX2_COMP_MAP(0, 1, 2, 3); return GX2_SURFACE_FORMAT_FLOAT_R32;
+		case TextureFormat::B5G6R5: _compMap = GX2_COMP_MAP(2, 1, 0, 3); return GX2_SURFACE_FORMAT_UNORM_R5_G6_B5;
+		case TextureFormat::BGRA4: _compMap = GX2_COMP_MAP(2, 1, 0, 3); return GX2_SURFACE_FORMAT_UNORM_R4_G4_B4_A4;
+		case TextureFormat::BGR5A1: _compMap = GX2_COMP_MAP(2, 1, 0, 3); return GX2_SURFACE_FORMAT_UNORM_R5_G5_B5_A1;
+		default: return GX2_SURFACE_FORMAT_INVALID;
+		}
+	}
+
 	struct RendererContextGX2 : public RendererContextI
 	{
 		RendererContextGX2(const Init& _init)
@@ -72,12 +150,17 @@ namespace bgfx { namespace gx2
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
-			for (TextureFormat::Enum format : { TextureFormat::RGBA8, TextureFormat::BGRA8, TextureFormat::R8, TextureFormat::RG8 })
-				g_caps.formats[format] = BGFX_CAPS_FORMAT_TEXTURE_2D | BGFX_CAPS_FORMAT_TEXTURE_VERTEX;
-			g_caps.formats[TextureFormat::RGBA8] |= BGFX_CAPS_FORMAT_TEXTURE_2D_SRGB;
-			g_caps.formats[TextureFormat::BGRA8] |= BGFX_CAPS_FORMAT_TEXTURE_2D_SRGB;
+			for (uint32_t ff = 0; ff < TextureFormat::Count; ++ff)
+			{
+				uint32_t comp;
+				const TextureFormat::Enum format = TextureFormat::Enum(ff);
+				if (textureFormat(format, false, comp) == GX2_SURFACE_FORMAT_INVALID) continue;
+				g_caps.formats[ff] = BGFX_CAPS_FORMAT_TEXTURE_2D | BGFX_CAPS_FORMAT_TEXTURE_3D | BGFX_CAPS_FORMAT_TEXTURE_CUBE | BGFX_CAPS_FORMAT_TEXTURE_VERTEX;
+				if (format == TextureFormat::RGBA8 || format == TextureFormat::BGRA8 || (format >= TextureFormat::BC1 && format <= TextureFormat::BC3))
+					g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_2D_SRGB | BGFX_CAPS_FORMAT_TEXTURE_3D_SRGB | BGFX_CAPS_FORMAT_TEXTURE_CUBE_SRGB;
+			}
 			g_caps.limits.maxTextureSize = 8192;
-			g_caps.limits.maxTextureLayers = 1;
+			g_caps.limits.maxTextureLayers = 2048;
 			g_caps.limits.maxFBAttachments = 1;
 			g_caps.limits.maxVertexStreams = BGFX_CONFIG_MAX_VERTEX_STREAMS;
 			g_caps.limits.maxVertexAttributes = 32;
@@ -367,100 +450,213 @@ namespace bgfx { namespace gx2
 			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL;
 		}
 
-		void textureUpload(Texture& _texture, uint32_t _offset, uint32_t _size)
+		void textureStorage(Texture& _texture, Block* _block)
 		{
-			// Rename busy readers and destinations. Retain the CPU staging image as the
-			// sole preservation source for subsequent partial updates.
-			if (!_texture.image || _texture.image->stamp > GX2GetRetiredTimeStamp())
-			{
-				if (_texture.image) _texture.spareImages.push_back(_texture.image);
-				_texture.image = reuse(_texture.spareImages, _texture.texture.surface.imageSize, _texture.texture.surface.alignment, true);
-			}
-			_texture.texture.surface.image = _texture.image->data;
-			_texture.source.image = _texture.staging->data;
-			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, (uint8_t*)_texture.source.image+_offset, _size);
-			GX2CopySurface(&_texture.source, 0, 0, &_texture.texture.surface, 0, 0);
-			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _texture.image->data, _texture.image->size);
-			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _texture.image->data, _texture.image->size);
-			touch(_texture.staging); touch(_texture.image);
+			GX2Surface& surface = _texture.texture.surface;
+			surface.image = _block->data;
+			surface.mipmaps = surface.mipmapSize ? (uint8_t*)_block->data+_texture.mipOffset : NULL;
 			GX2InitTextureRegs(&_texture.texture);
+		}
+
+		void allocateTexture(Texture& _texture)
+		{
+			GX2Surface& surface = _texture.texture.surface;
+			GX2CalcSurfaceSizeAndAlignment(&surface);
+			_texture.mipOffset = bx::alignUp(surface.imageSize, surface.alignment);
+			_texture.image = allocate(_texture.mipOffset+surface.mipmapSize, surface.alignment);
+			DCInvalidateRange(_texture.image->data, _texture.image->size);
+			textureStorage(_texture, _texture.image);
+		}
+
+		TextureStage& textureStage(Texture& _texture, uint32_t _mip, uint32_t _slice)
+		{
+			TextureLevel& level = _texture.levels[_mip];
+			TextureStage& stage = level.slices[_slice];
+			if (!stage.block) stage.block = allocate(level.source.imageSize, level.source.alignment);
+			else if (stage.block->stamp > GX2GetRetiredTimeStamp())
+			{
+				Block* replacement = reuse(stage.spare, level.source.imageSize, level.source.alignment);
+				bx::memCopy(replacement->data, stage.block->data, level.source.imageSize);
+				stage.spare.push_back(stage.block); stage.block = replacement;
+			}
+			return stage;
+		}
+
+		void stageTexture(Texture& _texture, uint32_t _mip, uint32_t _slice, const Rect& _rect, const void* _data, uint32_t _pitch)
+		{
+			TextureLevel& level = _texture.levels[_mip];
+			TextureStage& stage = textureStage(_texture, _mip, _slice);
+			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(_texture.format));
+			const uint32_t rowBytes = ((_rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
+			const uint32_t rows = (_rect.m_height+info.blockHeight-1)/info.blockHeight;
+			const uint32_t pitch = _pitch == UINT32_MAX ? rowBytes : _pitch;
+			const uint32_t offset = (_rect.m_y/info.blockHeight*level.source.pitch+_rect.m_x/info.blockWidth)*info.blockSize;
+			for (uint32_t yy = 0; yy < rows; ++yy)
+				bx::memCopy((uint8_t*)stage.block->data+offset+yy*level.source.pitch*info.blockSize, (const uint8_t*)_data+yy*pitch, rowBytes);
+			if (stage.dirty.isZero()) stage.dirty = _rect;
+			else
+			{
+				const uint16_t right = bx::max<uint16_t>(stage.dirty.m_x+stage.dirty.m_width, _rect.m_x+_rect.m_width);
+				const uint16_t bottom = bx::max<uint16_t>(stage.dirty.m_y+stage.dirty.m_height, _rect.m_y+_rect.m_height);
+				stage.dirty.m_x = bx::min(stage.dirty.m_x, _rect.m_x);
+				stage.dirty.m_y = bx::min(stage.dirty.m_y, _rect.m_y);
+				stage.dirty.m_width = right-stage.dirty.m_x; stage.dirty.m_height = bottom-stage.dirty.m_y;
+			}
+			if (!_texture.pending) m_pendingTextures.push_back(&_texture);
+			_texture.pending = true;
+		}
+
+		void uploadTextures()
+		{
+			bool published = false;
+			for (Texture* entry : m_pendingTextures)
+			{
+				Texture& texture = *entry;
+				if (!texture.pending) continue;
+				const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
+				for (TextureLevel& level : texture.levels)
+					for (TextureStage& stage : level.slices)
+					{
+						if (stage.dirty.isZero()) continue;
+						const Rect& rect = stage.dirty;
+						const uint32_t offset = (rect.m_y/info.blockHeight*level.source.pitch+rect.m_x/info.blockWidth)*info.blockSize;
+						const uint32_t rows = (rect.m_height+info.blockHeight-1)/info.blockHeight;
+						const uint32_t bytes = ((rows-1)*level.source.pitch+(rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
+						DCStoreRangeNoSync((uint8_t*)stage.block->data+offset, bytes);
+						published = true;
+					}
+			}
+			if (!published) { m_pendingTextures.clear(); return; }
+			OSMemoryBarrier();
+			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, NULL, UINT32_MAX);
+			for (Texture* entry : m_pendingTextures)
+			{
+				Texture& texture = *entry;
+				if (!texture.pending) continue;
+				if (texture.image->stamp > GX2GetRetiredTimeStamp())
+				{
+					Block* old = texture.image;
+					GX2Surface previous = texture.texture.surface;
+					texture.image = reuse(texture.spareImages, old->size, previous.alignment, true);
+					textureStorage(texture, texture.image);
+					// Preserve only on rename; all reads of the old backing remain immutable.
+					for (uint32_t mip = 0; mip < previous.mipLevels; ++mip)
+						for (uint32_t slice = 0; slice < texture.levels[mip].slices.size(); ++slice)
+							GX2CopySurface(&previous, mip, slice, &texture.texture.surface, mip, slice);
+					touch(old); texture.spareImages.push_back(old);
+				}
+				for (uint32_t mip = 0; mip < texture.levels.size(); ++mip)
+				{
+					TextureLevel& level = texture.levels[mip];
+					for (uint32_t slice = 0; slice < level.slices.size(); ++slice)
+					{
+						TextureStage& stage = level.slices[slice];
+						if (stage.dirty.isZero()) continue;
+						const Rect& rect = stage.dirty;
+						GX2Rect source = {rect.m_x, rect.m_y, rect.m_x+rect.m_width, rect.m_y+rect.m_height};
+						GX2Point dest = {rect.m_x, rect.m_y};
+						level.source.image = stage.block->data;
+						if (!rect.m_x && !rect.m_y && rect.m_width == level.source.width && rect.m_height == level.source.height)
+							GX2CopySurface(&level.source, 0, 0, &texture.texture.surface, mip, slice);
+						else GX2CopySurfaceEx(&level.source, 0, 0, &texture.texture.surface, mip, slice, 1, &source, &dest);
+						touch(stage.block); stage.dirty = {};
+					}
+				}
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, texture.image->data, texture.image->size);
+				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, texture.image->data, texture.image->size);
+				if (texture.image) touch(texture.image); texture.pending = false;
+			}
+			m_pendingTextures.clear();
+		}
+
+		void textureLevels(Texture& _texture)
+		{
+			const GX2Surface& surface = _texture.texture.surface;
+			_texture.levels.resize(surface.mipLevels);
+			for (uint32_t mip = 0; mip < surface.mipLevels; ++mip)
+			{
+				TextureLevel& level = _texture.levels[mip];
+				level.source = surface;
+				level.source.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+				level.source.width = bx::max(1u, surface.width >> mip); level.source.height = bx::max(1u, surface.height >> mip);
+				level.source.depth = 1; level.source.mipLevels = 1; level.source.aa = GX2_AA_MODE1X;
+				level.source.use = GX2_SURFACE_USE_TEXTURE;
+				level.source.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED; level.source.swizzle = 0;
+				GX2CalcSurfaceSizeAndAlignment(&level.source);
+				level.slices.resize(surface.dim == GX2_SURFACE_DIM_TEXTURE_3D ? bx::max(1u, surface.depth >> mip) : surface.depth);
+			}
 		}
 
 		void* createTexture(TextureHandle _handle, const Memory* _mem, uint64_t _flags, uint8_t _skip, uint64_t _external) override
 		{
 			bimg::ImageContainer image;
 			if (!bimg::imageParse(image, _mem->data, _mem->size)) return NULL;
-			if (image.m_cubeMap || image.m_numLayers != 1 || image.m_depth > 1 || image.m_numMips != 1 || _skip || _external
-			|| (_flags & (BGFX_TEXTURE_RT_MASK | BGFX_TEXTURE_COMPUTE_WRITE | BGFX_TEXTURE_READ_BACK)))
-			{ unsupported("texture arrays, mip chains, render textures or external textures"); return NULL; }
 			Texture& texture = m_textures[_handle.idx];
-			GX2SurfaceFormat format;
-			uint32_t compMap = GX2_COMP_MAP(0, 1, 2, 3);
-			switch (image.m_format)
-			{
-			case TextureFormat::R8: format = GX2_SURFACE_FORMAT_UNORM_R8; texture.bytesPerPixel = 1; compMap = GX2_COMP_MAP(0, 4, 4, 5); break;
-			case TextureFormat::RG8: format = GX2_SURFACE_FORMAT_UNORM_R8_G8; texture.bytesPerPixel = 2; compMap = GX2_COMP_MAP(0, 1, 4, 5); break;
-			case TextureFormat::BGRA8: compMap = GX2_COMP_MAP(2, 1, 0, 3); [[fallthrough]];
-			case TextureFormat::RGBA8: format = (_flags & BGFX_TEXTURE_SRGB) ? GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8 : GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8; texture.bytesPerPixel = 4; break;
-			default: unsupported("texture format"); return NULL;
-			}
-			texture.texture = {};
+			texture.flags = _flags; texture.format = TextureFormat::Enum(image.m_format);
 			GX2Surface& surface = texture.texture.surface;
-			surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-			surface.width = image.m_width; surface.height = image.m_height;
-			surface.depth = 1; surface.mipLevels = 1;
-			surface.format = format; surface.aa = GX2_AA_MODE1X;
-			surface.use = GX2_SURFACE_USE_TEXTURE;
+			surface = {};
+			surface.format = textureFormat(texture.format, 0 != (_flags & BGFX_TEXTURE_SRGB), texture.texture.compMap);
+			if (surface.format == GX2_SURFACE_FORMAT_INVALID) { unsupported("texture format"); return NULL; }
+			_skip = bx::min<uint8_t>(_skip, image.m_numMips-1);
+			surface.width = bx::max(1u, image.m_width >> _skip); surface.height = bx::max(1u, image.m_height >> _skip);
+			surface.depth = image.m_cubeMap ? image.m_numLayers*6 : image.m_depth > 1 ? bx::max(1u, image.m_depth >> _skip) : image.m_numLayers;
+			surface.dim = image.m_cubeMap ? GX2_SURFACE_DIM_TEXTURE_CUBE : image.m_depth > 1 ? GX2_SURFACE_DIM_TEXTURE_3D
+				: image.m_numLayers > 1 ? GX2_SURFACE_DIM_TEXTURE_2D_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D;
+			surface.mipLevels = image.m_numMips-_skip;
+			surface.aa = GX2_AA_MODE1X;
+			surface.use = GX2SurfaceUse(GX2_SURFACE_USE_TEXTURE | ((_flags & BGFX_TEXTURE_RT_MASK)
+				? (bimg::isDepth(bimg::TextureFormat::Enum(texture.format)) ? GX2_SURFACE_USE_DEPTH_BUFFER : GX2_SURFACE_USE_COLOR_BUFFER) : 0));
 			surface.tileMode = GX2_TILE_MODE_DEFAULT;
-			GX2CalcSurfaceSizeAndAlignment(&surface);
-			texture.texture.viewNumMips = 1; texture.texture.viewNumSlices = 1;
-			texture.texture.compMap = compMap;
-			texture.samplerFlags = uint32_t(_flags & UINT32_MAX);
-			texture.source = surface;
-			texture.source.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
-			GX2CalcSurfaceSizeAndAlignment(&texture.source);
-			texture.staging = allocate(texture.source.imageSize, texture.source.alignment);
-			bx::memSet(texture.staging->data, 0, texture.staging->size);
-			bimg::ImageMip mip;
-			if (bimg::imageGetRawData(image, 0, 0, _mem->data, _mem->size, mip))
-				for (uint32_t yy = 0; yy < image.m_height; ++yy)
-					bx::memCopy((uint8_t*)texture.staging->data + yy*texture.source.pitch*texture.bytesPerPixel,
-						mip.m_data + yy*image.m_width*texture.bytesPerPixel, image.m_width*texture.bytesPerPixel);
-			textureUpload(texture, 0, texture.source.imageSize);
+			texture.texture.viewFirstMip = 0; texture.texture.viewNumMips = surface.mipLevels;
+			texture.texture.viewFirstSlice = 0; texture.texture.viewNumSlices = surface.depth;
+			if (_external)
+			{
+				texture.texture = *(const GX2Texture*)(uintptr_t)_external;
+				textureLevels(texture); return NULL;
+			}
+			allocateTexture(texture); textureLevels(texture);
+			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
+			for (uint32_t mip = 0; mip < surface.mipLevels; ++mip)
+			{
+				const Rect rect = {0, 0, uint16_t(bx::max(1u, surface.width >> mip)), uint16_t(bx::max(1u, surface.height >> mip))};
+				const uint32_t rowBytes = ((rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
+				const uint32_t sliceBytes = rowBytes*((rect.m_height+info.blockHeight-1)/info.blockHeight);
+				for (uint32_t slice = 0; slice < texture.levels[mip].slices.size(); ++slice)
+				{
+					bimg::ImageMip raw;
+					const bool volume = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D;
+					if (bimg::imageGetRawData(image, volume ? 0 : slice, mip+_skip, _mem->data, _mem->size, raw))
+						stageTexture(texture, mip, slice, rect, raw.m_data+(volume ? slice*sliceBytes : 0), rowBytes);
+				}
+			}
 			return NULL;
 		}
 
 		void updateTexture(TextureHandle _handle, uint8_t _side, uint8_t _mip, const Rect& _rect, uint16_t _z, uint16_t _depth, uint16_t _pitch, const Memory* _mem) override
 		{
-			if (_side || _mip || _z || _depth != 1) { unsupported("texture update layer/mip"); return; }
 			Texture& texture = m_textures[_handle.idx];
-			const bool renamed = texture.staging->stamp > GX2GetRetiredTimeStamp();
-			if (renamed)
-			{
-				Block* replacement = reuse(texture.spareStaging, texture.source.imageSize, texture.source.alignment);
-				bx::memCopy(replacement->data, texture.staging->data, texture.source.imageSize);
-				texture.spareStaging.push_back(texture.staging); texture.staging = replacement;
-			}
-			const uint32_t rowBytes = _rect.m_width*texture.bytesPerPixel;
+			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
+			const uint32_t rowBytes = ((_rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
 			const uint32_t pitch = _pitch == UINT16_MAX ? rowBytes : _pitch;
-			for (uint32_t yy = 0; yy < _rect.m_height; ++yy)
-				bx::memCopy((uint8_t*)texture.staging->data + ((_rect.m_y+yy)*texture.source.pitch+_rect.m_x)*texture.bytesPerPixel,
-					_mem->data+yy*pitch, rowBytes);
-			const uint32_t rowPitch = texture.source.pitch*texture.bytesPerPixel;
-			const uint32_t offset = _rect.m_y*rowPitch+_rect.m_x*texture.bytesPerPixel;
-			const uint32_t bytes = (_rect.m_height-1)*rowPitch+rowBytes;
-			textureUpload(texture, renamed ? 0 : offset, renamed ? texture.source.imageSize : bytes);
+			const uint32_t sliceBytes = pitch*((_rect.m_height+info.blockHeight-1)/info.blockHeight);
+			for (uint32_t slice = 0; slice < _depth; ++slice)
+				stageTexture(texture, _mip, _z+_side+slice, _rect, _mem->data+slice*sliceBytes, pitch);
 		}
 
 		void destroyTexture(TextureHandle _handle) override
 		{
 			Texture& texture = m_textures[_handle.idx];
-			retire(texture.image); retire(texture.staging);
+			retire(texture.image);
 			for (Block*& block : texture.spareImages) retire(block);
-			for (Block*& block : texture.spareStaging) retire(block);
-			texture.spareImages.clear(); texture.spareStaging.clear();
+			for (TextureLevel& level : texture.levels)
+				for (TextureStage& stage : level.slices)
+				{
+					retire(stage.block);
+					for (Block*& block : stage.spare) retire(block);
+				}
+			texture = {};
 		}
-		uintptr_t getInternal(TextureHandle) override { unsupported("external texture access"); return 0; }
+		uintptr_t getInternal(TextureHandle _handle) override { return (uintptr_t)&m_textures[_handle.idx].texture; }
 		void clearTexture(TextureHandle, uint8_t, uint8_t, uint16_t, uint16_t) override { unsupported("texture clear"); }
 		void readTexture(TextureHandle, void*, uint16_t, uint8_t) override { unsupported("texture readback"); }
 		void readBuffer(Handle, void*, uint32_t, uint32_t) override { unsupported("buffer readback"); }
@@ -488,7 +684,7 @@ namespace bgfx { namespace gx2
 			m_boundFetch = NULL;
 			bx::memSet(m_boundAttributes, 0, sizeof(m_boundAttributes));
 			bx::memSet(m_boundTextures, 0, sizeof(m_boundTextures));
-			bx::memSet(m_boundSamplerFlags, 0xff, sizeof(m_boundSamplerFlags));
+			
 		}
 
 		void beginBatch()
@@ -717,7 +913,7 @@ namespace bgfx { namespace gx2
 			}
 		}
 
-		void textures(const RenderBind& _bind)
+		void textures(const RenderBind& _bind, const float _palette[][4])
 		{
 			static const GX2TexClampMode clamps[] = { GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_CLAMP_MODE_MIRROR, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_CLAMP_MODE_CLAMP_BORDER };
 			for (uint32_t ii = 0; ii < 16; ++ii)
@@ -726,14 +922,22 @@ namespace bgfx { namespace gx2
 				if (bind.m_idx == kInvalidHandle) continue;
 				if (bind.m_type != Binding::Texture) { unsupported("image and compute bindings"); continue; }
 				Texture& texture = m_textures[bind.m_idx];
-				const uint32_t flags = bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? texture.samplerFlags : bind.m_samplerFlags;
-				if (m_boundTextures[ii] != texture.image)
+				const uint32_t flags = bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? uint32_t(texture.flags) : bind.m_samplerFlags;
+				if (m_boundTextures[ii] != &texture.texture || !(m_boundBindings[ii] == bind))
 				{
-					GX2SetPixelTexture(&texture.texture, ii); GX2SetVertexTexture(&texture.texture, ii);
-					m_boundTextures[ii] = texture.image;
-				}
-				if (m_boundSamplerFlags[ii] != flags)
-				{
+					GX2Texture view = texture.texture;
+					view.viewFirstMip = bind.m_firstMip;
+					view.viewNumMips = bx::min<uint32_t>(bind.m_numMips, view.surface.mipLevels-bind.m_firstMip);
+					view.viewFirstSlice = bind.m_firstLayer;
+					view.viewNumSlices = bx::min<uint32_t>(bind.m_numLayers, view.surface.depth-bind.m_firstLayer);
+					if (flags & BGFX_SAMPLER_SRGB) view.surface.format = textureFormat(texture.format, true, view.compMap);
+					if (flags & BGFX_SAMPLER_SAMPLE_STENCIL)
+					{
+						view.surface.format = GX2_SURFACE_FORMAT_UINT_X24_G8;
+						view.compMap = GX2_COMP_MAP(1, 4, 4, 5);
+					}
+					GX2InitTextureRegs(&view);
+					GX2SetPixelTexture(&view, ii); GX2SetVertexTexture(&view, ii);
 					GX2Sampler sampler;
 					GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
 					GX2InitSamplerClamping(&sampler, clamps[(flags & BGFX_SAMPLER_U_MASK) >> BGFX_SAMPLER_U_SHIFT],
@@ -741,13 +945,23 @@ namespace bgfx { namespace gx2
 					GX2InitSamplerXYFilter(&sampler, flags & BGFX_SAMPLER_MAG_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
 						flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
 						flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? GX2_TEX_ANISO_RATIO_4_TO_1 : GX2_TEX_ANISO_RATIO_NONE);
-					GX2InitSamplerZMFilter(&sampler, GX2_TEX_Z_FILTER_MODE_POINT, GX2_TEX_MIP_FILTER_MODE_NONE);
-					GX2InitSamplerLOD(&sampler, 0, 0, 0);
-					GX2InitSamplerBorderType(&sampler, GX2_TEX_BORDER_TYPE_TRANSPARENT_BLACK);
+					GX2InitSamplerZMFilter(&sampler, flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR,
+						view.viewNumMips <= 1 ? GX2_TEX_MIP_FILTER_MODE_NONE : flags & BGFX_SAMPLER_MIP_POINT ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
+					GX2InitSamplerLOD(&sampler, float(bind.m_lod.min), float(bx::min<uint32_t>(bind.m_lod.max, view.viewNumMips-1)), 0);
+					GX2InitSamplerDepthCompare(&sampler, s_compare[(flags & BGFX_SAMPLER_COMPARE_MASK) >> BGFX_SAMPLER_COMPARE_SHIFT]);
+					GX2InitSamplerBorderType(&sampler, GX2_TEX_BORDER_TYPE_VARIABLE);
 					GX2SetPixelSampler(&sampler, ii); GX2SetVertexSampler(&sampler, ii);
-					m_boundSamplerFlags[ii] = flags;
+					m_boundTextures[ii] = &texture.texture; m_boundBindings[ii] = bind;
 				}
-				touch(texture.image);
+				if ((flags & BGFX_SAMPLER_U_MASK) == BGFX_SAMPLER_U_BORDER
+				|| (flags & BGFX_SAMPLER_V_MASK) == BGFX_SAMPLER_V_BORDER
+				|| (flags & BGFX_SAMPLER_W_MASK) == BGFX_SAMPLER_W_BORDER)
+				{
+					const float* color = _palette[(flags & BGFX_SAMPLER_BORDER_COLOR_MASK) >> BGFX_SAMPLER_BORDER_COLOR_SHIFT];
+					GX2SetPixelSamplerBorderColor(ii, color[0], color[1], color[2], color[3]);
+					GX2SetVertexSamplerBorderColor(ii, color[0], color[1], color[2], color[3]);
+				}
+				if (texture.image) touch(texture.image);
 			}
 		}
 
@@ -833,6 +1047,7 @@ namespace bgfx { namespace gx2
 			stats.gpuMemoryMax = -INT64_MAX; stats.gpuMemoryUsed = -INT64_MAX;
 			bx::memSet(stats.numPrims, 0, sizeof(stats.numPrims));
 			collect();
+			uploadTextures();
 			m_target = {};
 			if (!m_platform.query(m_platform.userData, &m_target) || !m_target.color || !m_target.context)
 			{ m_target = {}; stats.cpuTimeEnd = bx::getHPCounter(); return; }
@@ -884,7 +1099,7 @@ namespace bgfx { namespace gx2
 				const DepthControl& depth = draw.m_depthBias == UINT16_MAX ? renderView.m_depthBias : _render->m_frameCache.m_depthBiasCache.m_cache[draw.m_depthBias];
 				if (depth.m_constant || depth.m_slopeScale || depth.m_clamp || depth.m_depthClamp) unsupported("depth bias and depth clamp");
 				state(draw.m_stateFlags, draw.m_stencil, draw.m_rgba);
-				textures(_render->m_renderBind[draw.m_bindIdx]);
+				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 				if (draw.m_streamMask == UINT32_MAX) { unsupported("vertex-ID-only draws"); continue; }
 				vertexInput(program, draw);
 				const GX2PrimitiveMode primitive = s_primitive[(draw.m_stateFlags & BGFX_STATE_PT_MASK) >> BGFX_STATE_PT_SHIFT];
@@ -962,7 +1177,8 @@ namespace bgfx { namespace gx2
 			bind.m_bind[0].m_idx = _blitter.m_texture.idx;
 			bind.m_bind[0].m_type = Binding::Texture;
 			bind.m_bind[0].m_samplerFlags = BGFX_SAMPLER_INTERNAL_DEFAULT;
-			textures(bind);
+			const float palette[16][4] = {};
+			textures(bind, palette);
 			GX2DrawIndexedEx(GX2_PRIMITIVE_MODE_TRIANGLES, _numIndices, GX2_INDEX_TYPE_U16, index.block->data, 0, 1);
 			touch(index.block);
 		}
@@ -977,6 +1193,7 @@ namespace bgfx { namespace gx2
 		Program m_programs[BGFX_CONFIG_MAX_PROGRAMS];
 		Texture m_textures[BGFX_CONFIG_MAX_TEXTURES];
 		std::vector<Block*> m_allocations, m_touched, m_retired, m_lists, m_uploads;
+		std::vector<Texture*> m_pendingTextures;
 		GX2DepthBuffer m_depth = {};
 		Block* m_depthImage = NULL;
 		Block* m_list = NULL;
@@ -990,8 +1207,8 @@ namespace bgfx { namespace gx2
 		Block* m_boundFetch = NULL;
 		const void* m_boundAttributes[BGFX_CONFIG_MAX_VERTEX_STREAMS];
 		uint32_t m_boundStrides[BGFX_CONFIG_MAX_VERTEX_STREAMS];
-		Block* m_boundTextures[16];
-		uint32_t m_boundSamplerFlags[16];
+		const GX2Texture* m_boundTextures[16];
+		Binding m_boundBindings[16];
 	};
 
 	static RendererContextGX2* s_renderGX2;
