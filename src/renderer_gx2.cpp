@@ -214,6 +214,12 @@ namespace bgfx { namespace gx2
 		RendererContextGX2(const Init& _init)
 		{
 			m_mainWindow.swapChain = _init.swapChain;
+			if (NULL == _init.swapChain.nwh)
+			{
+				m_headlessContext = (GX2ContextState*)allocate(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT)->data;
+				GX2SetupContextStateEx(m_headlessContext, TRUE);
+				m_context = m_headlessContext;
+			}
 			g_caps.supported = BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
@@ -256,6 +262,7 @@ namespace bgfx { namespace gx2
 			// SDL is still alive here. One shutdown drain covers live and retired storage.
 			destroyWindow(m_mainWindow);
 			for (FrameBuffer& fb : m_frameBuffers) destroyWindow(fb.window);
+			if (m_headlessContext) GX2SetContextState(NULL);
 			GX2DrawDone(); seal(); transferPublish(true);
 			for (Block* block : m_allocations)
 			{
@@ -330,7 +337,7 @@ namespace bgfx { namespace gx2
 				GX2Flush(); seal();
 			}
 			// Resource precommands of the next frame must not restore a stale borrow.
-			m_context = NULL;
+			m_context = m_headlessContext;
 		}
 
 		void flip() override
@@ -2178,7 +2185,9 @@ namespace bgfx { namespace gx2
 			finishRenderPass();
 			uploadTextures();
 			do { transferBlit(_state.advance()); } while (_state.hasItem(_view));
-			restore(); bindFrameBuffer(m_currentFrameBuffer); beginBatch();
+			restore();
+			if (frameBufferAvailable(m_currentFrameBuffer)) bindFrameBuffer(m_currentFrameBuffer);
+			beginBatch();
 			return true; // caller reapplies its current view's viewport/scissor.
 		}
 
@@ -2609,6 +2618,7 @@ namespace bgfx { namespace gx2
 		bool queryWindow(Window& _window)
 		{
 			_window.target = {}; _window.used = false;
+			if (!_window.swapChain.nwh) return false;
 			const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
 			if (!platform.query(platform.userData, &_window.target) || !_window.target.color || !_window.target.context)
 			{
@@ -2621,7 +2631,7 @@ namespace bgfx { namespace gx2
 		FrameBufferHandle queryWindows(const SwapChain& _main)
 		{
 			m_mainWindow.swapChain = _main;
-			m_context = NULL;
+			m_context = m_headlessContext;
 			FrameBufferHandle initial = BGFX_INVALID_HANDLE;
 			if (queryWindow(m_mainWindow)) m_context = m_mainWindow.target.context;
 			for (uint16_t ii = 0; ii < BGFX_CONFIG_MAX_FRAME_BUFFERS; ++ii)
@@ -2889,8 +2899,12 @@ namespace bgfx { namespace gx2
 			uint32_t viewTimer = UINT32_MAX;
 			uploadTextures();
 			restore();
-			GX2SetSwapInterval((_render->m_reset & BGFX_RESET_VSYNC) ? 1 : 0);
-			bindFrameBuffer(initial);
+			m_currentFrameBuffer = BGFX_INVALID_HANDLE;
+			if (frameBufferAvailable(initial))
+			{
+				GX2SetSwapInterval((_render->m_reset & BGFX_RESET_VSYNC) ? 1 : 0);
+				bindFrameBuffer(initial);
+			}
 			if (_render->m_iboffset) update(m_indexBuffers[_render->m_transientIb->handle.idx], 0, _render->m_iboffset, _render->m_transientIb->data, false, true);
 			if (_render->m_vboffset) update(m_vertexBuffers[_render->m_transientVb->handle.idx], 0, _render->m_vboffset, _render->m_transientVb->data, true, true);
 			_render->sort();
@@ -3074,6 +3088,7 @@ namespace bgfx { namespace gx2
 		TextureFormat::Enum m_captureFormat = TextureFormat::Unknown;
 
 		Window m_mainWindow;
+		GX2ContextState* m_headlessContext = NULL;
 		GX2ContextState* m_context = NULL;
 		Buffer m_indexBuffers[BGFX_CONFIG_MAX_INDEX_BUFFERS];
 		Buffer m_vertexBuffers[BGFX_CONFIG_MAX_VERTEX_BUFFERS];
@@ -3117,7 +3132,7 @@ namespace bgfx { namespace gx2
 	static RendererContextGX2* s_renderGX2;
 	RendererContextI* rendererCreate(const Init& _init)
 	{
-		if (NULL == _init.swapChain.nwh) return NULL;
+		if (NULL == _init.swapChain.nwh && (0 != _init.swapChain.width || 0 != _init.swapChain.height)) return NULL;
 		s_renderGX2 = BX_NEW(g_allocator, RendererContextGX2)(_init);
 		return s_renderGX2;
 	}

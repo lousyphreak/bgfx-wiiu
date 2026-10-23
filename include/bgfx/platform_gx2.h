@@ -31,6 +31,10 @@ namespace bgfx
 	/// commands while foreground-ready. Shut bgfx down before SDL.
 	/// The RGBA8 adapter owns presentation dimensions/format and scan buffers.
 	/// bgfx supplies requested 2x/4x/8x MSAA with a retained color target when needed.
+	/// For headless rendering, leave Init::swapChain.nwh null and width/height zero.
+	/// bgfx owns an aligned GX2 context state, but GX2 must already be initialized
+	/// by SDL/the host. Only explicit offscreen framebuffers are drawable; frames
+	/// flush without presenting. This does not initialize or shut down the GX2 SDK.
 	struct Gx2PlatformData
 	{
 		void* userData;
