@@ -37,7 +37,11 @@ struct ColorVertex
 	{
 		ms_layout
 			.begin()
+#if BX_PLATFORM_WIIU
+			.addPackedColor(bgfx::Attrib::Color0)
+#else
 			.add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
+#endif // BX_PLATFORM_WIIU
 			.end();
 	};
 
