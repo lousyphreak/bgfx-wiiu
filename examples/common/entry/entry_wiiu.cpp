@@ -17,20 +17,32 @@
 
 namespace entry
 {
-	static SDL_Window* s_window;
+	static bool queryTarget(void* _userData, bgfx::Gx2Target* _target);
+	static void present(void* _userData);
+
+	struct Window
+	{
+		SDL_Window* window = NULL;
+		bgfx::Gx2PlatformData platform = { this, queryTarget, present };
+		Sint64 generation = -1;
+		int32_t mouseX = 0;
+		int32_t mouseY = 0;
+		int32_t mouseZ = 0;
+	};
+
+	// SDL's single window mirrors both outputs. A second window owns the DRC.
+	static Window s_windows[2];
 	static EventQueue s_events;
 	static SDL_Gamepad* s_gamepads[ENTRY_CONFIG_MAX_GAMEPADS];
-	static Sint64 s_generation = -1;
-	static int32_t s_mouseX;
-	static int32_t s_mouseY;
-	static int32_t s_mouseZ;
 	static bool s_quit;
 
 	static bool queryTarget(void* _userData, bgfx::Gx2Target* _target)
 	{
-		SDL_PropertiesID props = SDL_GetWindowProperties(static_cast<SDL_Window*>(_userData));
-		Uint32 outputs = Uint32(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_WIIU_PRESENT_OUTPUT_MASK_NUMBER, 0));
+		Window& win = *static_cast<Window*>(_userData);
 		*_target = {};
+		if (NULL == win.window) return false;
+		SDL_PropertiesID props = SDL_GetWindowProperties(win.window);
+		Uint32 outputs = Uint32(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_WIIU_PRESENT_OUTPUT_MASK_NUMBER, 0));
 		if (outputs & SDL_WIIU_PRESENT_OUTPUT_TV)
 		{
 			_target->color = static_cast<GX2ColorBuffer*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_TV_COLOR_BUFFER_POINTER, NULL));
@@ -46,10 +58,31 @@ namespace entry
 
 	static void present(void* _userData)
 	{
-		SDL_WIIU_SwapWindow(static_cast<SDL_Window*>(_userData));
+		SDL_WIIU_SwapWindow(static_cast<Window*>(_userData)->window);
 	}
 
-	static bgfx::Gx2PlatformData s_platform = { NULL, queryTarget, present };
+	static WindowHandle findWindow(SDL_WindowID _id)
+	{
+		for (uint16_t ii = 0; ii < BX_COUNTOF(s_windows); ++ii)
+		{
+			if (NULL != s_windows[ii].window && SDL_GetWindowID(s_windows[ii].window) == _id)
+			{
+				return { ii };
+			}
+		}
+		return { UINT16_MAX };
+	}
+
+	static void updateWindowSize(WindowHandle _handle)
+	{
+		Window& win = s_windows[_handle.idx];
+		bgfx::Gx2Target target;
+		if (queryTarget(&win, &target))
+		{
+			win.generation = SDL_GetNumberProperty(SDL_GetWindowProperties(win.window), SDL_PROP_WINDOW_WIIU_FOREGROUND_GENERATION_NUMBER, 0);
+			s_events.postSizeEvent(_handle, target.color->surface.width, target.color->surface.height);
+		}
+	}
 
 	static Key::Enum translateKey(SDL_Scancode _key)
 	{
@@ -157,13 +190,29 @@ namespace entry
 				switch (event.type)
 				{
 				case SDL_EVENT_QUIT:
-				case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
 					s_quit = true;
 					s_events.postExitEvent();
 					break;
+				case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+					{
+						WindowHandle handle = findWindow(event.window.windowID);
+						if (handle.idx == 0)
+						{
+							s_quit = true;
+							s_events.postExitEvent();
+						}
+						else if (isValid(handle)) destroyWindow(handle);
+					}
+					break;
+				case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+					{
+						WindowHandle handle = findWindow(event.window.windowID);
+						if (isValid(handle)) updateWindowSize(handle);
+					}
+					break;
 				case SDL_EVENT_KEY_DOWN:
 				case SDL_EVENT_KEY_UP:
-					s_events.postKeyEvent(kDefaultWindowHandle, translateKey(event.key.scancode), translateModifiers(event.key.mod), event.key.down);
+					s_events.postKeyEvent(findWindow(event.key.windowID), translateKey(event.key.scancode), translateModifiers(event.key.mod), event.key.down);
 					break;
 				case SDL_EVENT_TEXT_INPUT:
 					for (const char* str = event.text.text; *str;)
@@ -171,26 +220,41 @@ namespace entry
 						uint8_t ch[4] = {};
 						uint8_t len = (*str & 0x80) == 0 ? 1 : (*str & 0xe0) == 0xc0 ? 2 : (*str & 0xf0) == 0xe0 ? 3 : 4;
 						bx::memCopy(ch, str, len);
-						s_events.postCharEvent(kDefaultWindowHandle, len, ch);
+						s_events.postCharEvent(findWindow(event.text.windowID), len, ch);
 						str += len;
 					}
 					break;
 				case SDL_EVENT_MOUSE_MOTION:
-					s_mouseX = int32_t(event.motion.x);
-					s_mouseY = int32_t(event.motion.y);
-					s_events.postMouseEvent(kDefaultWindowHandle, s_mouseX, s_mouseY, s_mouseZ);
+					{
+						WindowHandle handle = findWindow(event.motion.windowID);
+						if (!isValid(handle)) break;
+						Window& win = s_windows[handle.idx];
+						win.mouseX = int32_t(event.motion.x);
+						win.mouseY = int32_t(event.motion.y);
+						s_events.postMouseEvent(handle, win.mouseX, win.mouseY, win.mouseZ);
+					}
 					break;
 				case SDL_EVENT_MOUSE_WHEEL:
-					s_mouseZ += int32_t(event.wheel.y);
-					s_events.postMouseEvent(kDefaultWindowHandle, s_mouseX, s_mouseY, s_mouseZ);
+					{
+						WindowHandle handle = findWindow(event.wheel.windowID);
+						if (!isValid(handle)) break;
+						Window& win = s_windows[handle.idx];
+						win.mouseZ += int32_t(event.wheel.y);
+						s_events.postMouseEvent(handle, win.mouseX, win.mouseY, win.mouseZ);
+					}
 					break;
 				case SDL_EVENT_MOUSE_BUTTON_DOWN:
 				case SDL_EVENT_MOUSE_BUTTON_UP:
 					{
+						WindowHandle handle = findWindow(event.button.windowID);
+						if (!isValid(handle)) break;
+						Window& win = s_windows[handle.idx];
 						MouseButton::Enum button = event.button.button == SDL_BUTTON_LEFT ? MouseButton::Left
 							: event.button.button == SDL_BUTTON_RIGHT ? MouseButton::Right
 							: event.button.button == SDL_BUTTON_MIDDLE ? MouseButton::Middle : MouseButton::None;
-						s_events.postMouseEvent(kDefaultWindowHandle, int32_t(event.button.x), int32_t(event.button.y), s_mouseZ, button, event.button.down);
+						win.mouseX = int32_t(event.button.x);
+						win.mouseY = int32_t(event.button.y);
+						s_events.postMouseEvent(handle, win.mouseX, win.mouseY, win.mouseZ, button, event.button.down);
 					}
 					break;
 				case SDL_EVENT_GAMEPAD_ADDED:
@@ -231,17 +295,18 @@ namespace entry
 			}
 
 			if (s_quit) return;
-			if (queryTarget(s_window, &target)) break;
+			if (queryTarget(&s_windows[0], &target)) break;
 			// SDL releases its borrowed GX2 targets while in the background.
 			// Keep pumping ProcUI without returning to an example's rendering loop.
 			SDL_Delay(10);
 		} while (true);
 
-		Sint64 generation = SDL_GetNumberProperty(SDL_GetWindowProperties(s_window), SDL_PROP_WINDOW_WIIU_FOREGROUND_GENERATION_NUMBER, 0);
-		if (generation != s_generation)
+		for (uint16_t ii = 0; ii < BX_COUNTOF(s_windows); ++ii)
 		{
-			s_generation = generation;
-			s_events.postSizeEvent(kDefaultWindowHandle, target.color->surface.width, target.color->surface.height);
+			Window& win = s_windows[ii];
+			if (NULL == win.window) continue;
+			Sint64 generation = SDL_GetNumberProperty(SDL_GetWindowProperties(win.window), SDL_PROP_WINDOW_WIIU_FOREGROUND_GENERATION_NUMBER, 0);
+			if (generation != win.generation) updateWindowSize({ ii });
 		}
 	}
 
@@ -261,31 +326,74 @@ namespace entry
 
 	WindowHandle createWindow(int32_t _x, int32_t _y, uint32_t _width, uint32_t _height, uint32_t _flags, const char* _title)
 	{
-		BX_UNUSED(_x, _y, _width, _height, _flags, _title);
-		return { UINT16_MAX };
+		BX_UNUSED(_x, _y, _flags);
+		uint16_t idx;
+		for (idx = 0; idx < BX_COUNTOF(s_windows); ++idx)
+		{
+			if (NULL == s_windows[idx].window) break;
+		}
+		if (idx == BX_COUNTOF(s_windows)) return { UINT16_MAX };
+
+		SDL_DisplayID display = SDL_GetPrimaryDisplay();
+		if (idx != 0)
+		{
+			int count;
+			SDL_DisplayID* displays = SDL_GetDisplays(&count);
+			for (int ii = 0; ii < count; ++ii)
+			{
+				if (displays[ii] != SDL_GetDisplayForWindow(s_windows[0].window))
+				{
+					display = displays[ii];
+					break;
+				}
+			}
+			SDL_free(displays);
+		}
+
+		SDL_PropertiesID props = SDL_CreateProperties();
+		SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, _title);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, _width);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, _height);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+		Window& win = s_windows[idx];
+		win.window = SDL_CreateWindowWithProperties(props);
+		SDL_DestroyProperties(props);
+		if (NULL == win.window) return { UINT16_MAX };
+
+		win.generation = -1;
+		win.mouseX = win.mouseY = win.mouseZ = 0;
+		WindowHandle handle = { idx };
+		updateWindowSize(handle);
+		s_events.postWindowEvent(handle, &win.platform);
+		return handle;
 	}
-	void destroyWindow(WindowHandle _handle) { BX_UNUSED(_handle); }
+
+	void destroyWindow(WindowHandle _handle)
+	{
+		Window& win = s_windows[_handle.idx];
+		s_events.postWindowEvent(_handle);
+		SDL_DestroyWindow(win.window);
+		win.window = NULL;
+	}
 	void setWindowPos(WindowHandle _handle, int32_t _x, int32_t _y) { BX_UNUSED(_handle, _x, _y); }
 	void setWindowSize(WindowHandle _handle, uint32_t _width, uint32_t _height)
 	{
-		BX_UNUSED(_handle);
-		SDL_SetWindowSize(s_window, int(_width), int(_height));
+		SDL_SetWindowSize(s_windows[_handle.idx].window, int(_width), int(_height));
 	}
 	void setWindowTitle(WindowHandle _handle, const char* _title)
 	{
-		BX_UNUSED(_handle);
-		SDL_SetWindowTitle(s_window, _title);
+		SDL_SetWindowTitle(s_windows[_handle.idx].window, _title);
 	}
 	void setWindowFlags(WindowHandle _handle, uint32_t _flags, bool _enabled) { BX_UNUSED(_handle, _flags, _enabled); }
 	void toggleFullscreen(WindowHandle _handle) { BX_UNUSED(_handle); }
 	void setMouseLock(WindowHandle _handle, bool _lock)
 	{
-		BX_UNUSED(_handle);
-		SDL_SetWindowRelativeMouseMode(s_window, _lock);
+		SDL_SetWindowRelativeMouseMode(s_windows[_handle.idx].window, _lock);
 	}
 	void* getNativeWindowHandle(WindowHandle _handle)
 	{
-		return _handle.idx == 0 ? &s_platform : NULL;
+		return isValid(_handle) && NULL != s_windows[_handle.idx].window ? &s_windows[_handle.idx].platform : NULL;
 	}
 	void* getNativeDisplayHandle() { return NULL; }
 	bgfx::NativeWindowHandleType::Enum getNativeWindowHandleType() { return bgfx::NativeWindowHandleType::Default; }
@@ -299,19 +407,17 @@ int SDL_main(int _argc, char** _argv)
 		SDL_Log("SDL_Init failed: %s", SDL_GetError());
 		return 1;
 	}
-	entry::s_window = SDL_CreateWindow("bgfx example", ENTRY_DEFAULT_WIDTH, ENTRY_DEFAULT_HEIGHT, 0);
-	if (NULL == entry::s_window)
+	entry::WindowHandle handle = entry::createWindow(0, 0, ENTRY_DEFAULT_WIDTH, ENTRY_DEFAULT_HEIGHT, ENTRY_WINDOW_FLAG_NONE, "bgfx example");
+	if (!entry::isValid(handle))
 	{
 		SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
 		SDL_Quit();
 		return 1;
 	}
-	entry::s_platform.userData = entry::s_window;
 	chdir("fs:/vol/content");
-	entry::s_events.postWindowEvent(entry::kDefaultWindowHandle, &entry::s_platform);
 	int result = entry::main(_argc, _argv);
 	for (SDL_Gamepad* gamepad : entry::s_gamepads) SDL_CloseGamepad(gamepad);
-	SDL_DestroyWindow(entry::s_window);
+	for (entry::Window& win : entry::s_windows) SDL_DestroyWindow(win.window);
 	SDL_Quit();
 	return result;
 }

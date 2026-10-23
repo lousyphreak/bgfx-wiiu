@@ -1,7 +1,7 @@
 # Original bgfx applications, sharing one SDL3/GX2 entry implementation.
 find_package(SDL3 REQUIRED CONFIG)
 set(BGFX_WIIU_EXAMPLES
-    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update"
+    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps"
     CACHE STRING "Numbered example directories to build")
 set(common_dir "${BGFX_DIR}/examples/common")
 set(example_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/example-generated")
@@ -31,30 +31,50 @@ target_compile_definitions(example-common PUBLIC USE_ENTRY=1 ENTRY_CONFIG_IMPLEM
 
 # Supply GX2 variants alongside the upstream embedded shader tables without
 # changing their checked-in, cross-platform headers or common renderer sources.
-set(imgui_embedded "#include <stdint.h>\n")
-foreach(shader IN ITEMS vs_ocornut_imgui fs_ocornut_imgui vs_imgui_image fs_imgui_image)
-    if(shader MATCHES "^vs_")
-        set(stage vertex)
+set(embedded_families imgui)
+if("10-font" IN_LIST BGFX_WIIU_EXAMPLES OR "11-fontsdf" IN_LIST BGFX_WIIU_EXAMPLES)
+    target_sources(example-common PRIVATE
+        ${common_dir}/cube_atlas.cpp
+        ${common_dir}/font/font_manager.cpp
+        ${common_dir}/font/text_buffer_manager.cpp
+        ${common_dir}/font/text_metrics.cpp
+        ${common_dir}/font/utf8.cpp)
+    list(APPEND embedded_families font)
+endif()
+foreach(family IN LISTS embedded_families)
+    set(embedded "#include <stdint.h>\n")
+    file(GLOB embedded_sources CONFIGURE_DEPENDS
+        "${common_dir}/${family}/vs_*.sc" "${common_dir}/${family}/fs_*.sc")
+    foreach(source IN LISTS embedded_sources)
+        get_filename_component(shader "${source}" NAME_WE)
+        if(shader MATCHES "^vs_")
+            set(stage vertex)
+        else()
+            set(stage fragment)
+        endif()
+        set(output "${example_generated_dir}/${shader}.gx2.bin.h")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${example_generated_dir}"
+            COMMAND "${BGFX_SHADERC}" -f "${source}" -o "${output}"
+                --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
+                --varyingdef "${common_dir}/${family}/varying.def.sc"
+                -i "${BGFX_DIR}/src;${common_dir}" --depends
+            DEPENDS "${BGFX_SHADERC}" "${source}"
+                "${common_dir}/${family}/varying.def.sc" "${BGFX_DIR}/src/bgfx_shader.sh"
+            DEPFILE "${output}.d"
+            VERBATIM)
+        target_sources(example-common PRIVATE "${output}")
+        string(APPEND embedded "#include \"${output}\"\n")
+    endforeach()
+    file(GENERATE OUTPUT "${example_generated_dir}/${family}-gx2.h" CONTENT "${embedded}")
+    if(family STREQUAL "imgui")
+        set(consumer "${common_dir}/imgui/imgui.cpp")
     else()
-        set(stage fragment)
+        set(consumer "${common_dir}/font/text_buffer_manager.cpp")
     endif()
-    set(output "${example_generated_dir}/${shader}.gx2.bin.h")
-    add_custom_command(OUTPUT "${output}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${example_generated_dir}"
-        COMMAND "${BGFX_SHADERC}" -f "${common_dir}/imgui/${shader}.sc" -o "${output}"
-            --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
-            --varyingdef "${common_dir}/imgui/varying.def.sc"
-            -i "${BGFX_DIR}/src;${common_dir}" --depends
-        DEPENDS "${BGFX_SHADERC}" "${common_dir}/imgui/${shader}.sc"
-            "${common_dir}/imgui/varying.def.sc" "${BGFX_DIR}/src/bgfx_shader.sh"
-        DEPFILE "${output}.d"
-        VERBATIM)
-    target_sources(example-common PRIVATE "${output}")
-    string(APPEND imgui_embedded "#include \"${output}\"\n")
+    set_source_files_properties("${consumer}" PROPERTIES
+        COMPILE_OPTIONS "-include;${example_generated_dir}/${family}-gx2.h")
 endforeach()
-file(GENERATE OUTPUT "${example_generated_dir}/imgui-gx2.h" CONTENT "${imgui_embedded}")
-set_source_files_properties("${common_dir}/imgui/imgui.cpp" PROPERTIES
-    COMPILE_OPTIONS "-include;${example_generated_dir}/imgui-gx2.h")
 
 foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
     set(example_dir "${BGFX_DIR}/examples/${example}")
@@ -73,7 +93,7 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
 
     # GX2 exposes graphics stages only; examples gate optional compute on caps.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
-    if(example STREQUAL "05-instancing")
+    if(example STREQUAL "05-instancing" OR example STREQUAL "22-windows")
         list(APPEND shader_sources
             "${BGFX_DIR}/examples/01-cubes/vs_cubes.sc"
             "${BGFX_DIR}/examples/01-cubes/fs_cubes.sc")
