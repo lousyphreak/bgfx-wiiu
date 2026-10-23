@@ -62,6 +62,13 @@ namespace bgfx { namespace gx2
 		}
 	}
 
+	static uint32_t textureStorageBlockSize(TextureFormat::Enum _format)
+	{
+		// bimg packs D24/D24F into three bytes; GX2's R24_X8/D24_S8 use four.
+		return _format == TextureFormat::D24 || _format == TextureFormat::D24F
+			? 4 : bimg::getBlockInfo(bimg::TextureFormat::Enum(_format)).blockSize;
+	}
+
 	static const char* s_attribName[] =
 	{
 		"a_position",
@@ -595,6 +602,8 @@ namespace bgfx { namespace gx2
 			uint32_t _height, GX2Surface& _view)
 		{
 			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(_format));
+			// Packed depth pixels cannot be described by a native four-byte view.
+			if (textureStorageBlockSize(_format) != info.blockSize) return false;
 			if (_rowPitch%info.blockSize) return false;
 			const uint32_t width = (_rowPitch/info.blockSize)*info.blockWidth;
 			if (width > GX2_MAX_TEXTURE_WIDTH) return false;
@@ -628,6 +637,7 @@ namespace bgfx { namespace gx2
 			const uint32_t width = bx::min<uint32_t>(_blit.m_width, mipWidth-_blit.m_srcX);
 			const uint32_t height = bx::min<uint32_t>(_blit.m_height, mipHeight-_blit.m_srcY);
 			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(src.format));
+			const uint32_t blockSize = textureStorageBlockSize(src.format);
 			const bool bc = bimg::isCompressed(bimg::TextureFormat::Enum(src.format));
 			if (bc && ((_blit.m_srcX | _blit.m_srcY) & 3))
 			{
@@ -657,10 +667,17 @@ namespace bgfx { namespace gx2
 						edge ? 0 : _blit.m_srcX, edge ? 0 : _blit.m_srcY,
 						staging, 0, 0, 0, 0, staging.width, staging.height, src.format);
 					gpuCopyWritten(block);
-					const uint32_t pitch = GX2GetSurfaceMipPitch(&staging, 0)*info.blockSize;
+					const uint32_t pitch = GX2GetSurfaceMipPitch(&staging, 0)*blockSize;
 					const uint32_t start = edge
 						? (_blit.m_srcY/info.blockHeight)*pitch+(_blit.m_srcX/info.blockWidth)*info.blockSize : 0;
-					gpuCopyRows(block, start, pitch, dst.block, offset, _blit.m_rowPitch, rowBytes, rows);
+					if (blockSize != info.blockSize)
+					{
+						// Strip X8 from each encoded depth pixel, entirely on the GPU.
+						for (uint32_t row = 0; row < rows; ++row)
+							gpuCopyRows(block, row*pitch, blockSize, dst.block, offset+row*_blit.m_rowPitch,
+								info.blockSize, info.blockSize, width);
+					}
+					else gpuCopyRows(block, start, pitch, dst.block, offset, _blit.m_rowPitch, rowBytes, rows);
 					retire(block);
 				}
 			}
@@ -679,6 +696,7 @@ namespace bgfx { namespace gx2
 			const uint32_t width = bx::min<uint32_t>(_blit.m_width, mipWidth-_blit.m_dstX);
 			const uint32_t height = bx::min<uint32_t>(_blit.m_height, mipHeight-_blit.m_dstY);
 			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(dst.format));
+			const uint32_t blockSize = textureStorageBlockSize(dst.format);
 			const bool bc = bimg::isCompressed(bimg::TextureFormat::Enum(dst.format));
 			if (bc && ((_blit.m_dstX | _blit.m_dstY) & 3))
 			{
@@ -702,7 +720,7 @@ namespace bgfx { namespace gx2
 					Block* block = gpuBufferAllocate(staging.imageSize, staging.alignment);
 					DCInvalidateRange(block->data, block->size);
 					staging.image = block->data;
-					const uint32_t pitch = GX2GetSurfaceMipPitch(&staging, 0)*info.blockSize;
+					const uint32_t pitch = GX2GetSurfaceMipPitch(&staging, 0)*blockSize;
 					const uint32_t start = edge
 						? (_blit.m_dstY/info.blockHeight)*pitch+(_blit.m_dstX/info.blockWidth)*info.blockSize : 0;
 					if (edge && (_blit.m_dstX || _blit.m_dstY || width != mipWidth || height != mipHeight))
@@ -713,7 +731,14 @@ namespace bgfx { namespace gx2
 							staging, 0, 0, 0, 0, mipWidth, mipHeight, dst.format);
 						gpuCopyWritten(block);
 					}
-					gpuCopyRows(src.block, offset, _blit.m_rowPitch, block, start, pitch, rowBytes, rows);
+					if (blockSize != info.blockSize)
+					{
+						// X8 is not part of the API's D24/D24F payload.
+						for (uint32_t row = 0; row < rows; ++row)
+							gpuCopyRows(src.block, offset+row*_blit.m_rowPitch, info.blockSize,
+								block, row*pitch, blockSize, info.blockSize, width);
+					}
+					else gpuCopyRows(src.block, offset, _blit.m_rowPitch, block, start, pitch, rowBytes, rows);
 					gpuCopyWritten(block);
 					transferCopy(staging, 0, 0, 0, 0, destination, _blit.m_dstMip, _blit.m_dstZ+slice,
 						edge ? 0 : _blit.m_dstX, edge ? 0 : _blit.m_dstY,
@@ -907,16 +932,29 @@ namespace bgfx { namespace gx2
 			const bimg::TextureFormat::Enum requested = bimg::TextureFormat::Enum(_texture.requestedFormat);
 			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(_texture.format));
 			const bimg::ImageBlockInfo& sourceInfo = bimg::getBlockInfo(requested);
+			const uint32_t blockSize = textureStorageBlockSize(_texture.format);
 			const uint32_t blocksX = bx::max<uint32_t>(sourceInfo.minBlockX, (_rect.m_width+sourceInfo.blockWidth-1)/sourceInfo.blockWidth);
 			const uint32_t rows = bx::max<uint32_t>(sourceInfo.minBlockY, (_rect.m_height+sourceInfo.blockHeight-1)/sourceInfo.blockHeight);
 			const uint32_t rowBytes = blocksX*sourceInfo.blockSize;
 			const uint32_t pitch = _pitch == UINT32_MAX ? rowBytes : _pitch;
-			const uint32_t offset = (_rect.m_y/info.blockHeight*level.source.pitch+_rect.m_x/info.blockWidth)*info.blockSize;
+			const uint32_t offset = (_rect.m_y/info.blockHeight*level.source.pitch+_rect.m_x/info.blockWidth)*blockSize;
 			uint8_t* dst = (uint8_t*)stage.block->data+offset;
-			const uint32_t dstPitch = level.source.pitch*info.blockSize;
+			const uint32_t dstPitch = level.source.pitch*blockSize;
 			const uint8_t wordSize = bimg::getPixelWordSize(requested);
 			Rect rect = _rect;
-			if (_texture.format == _texture.requestedFormat)
+			if (blockSize != info.blockSize)
+			{
+				// Keep all 24 encoded bits, normalizing native CPU words to GX2 LE.
+				for (uint32_t yy = 0; yy < rows; ++yy)
+					for (uint32_t xx = 0; xx < blocksX; ++xx)
+					{
+						uint8_t* pixel = dst+yy*dstPitch+xx*blockSize;
+						copyTextureRow(pixel, (const uint8_t*)_data+yy*pitch+xx*sourceInfo.blockSize,
+							sourceInfo.blockSize, _littleEndian ? 0 : wordSize);
+						pixel[3] = 0;
+					}
+			}
+			else if (_texture.format == _texture.requestedFormat)
 			{
 				// GX2 consumes little-endian words; byte channels and encoded blocks copy verbatim.
 				for (uint32_t yy = 0; yy < rows; ++yy)
@@ -1001,14 +1039,15 @@ namespace bgfx { namespace gx2
 				Texture& texture = *entry;
 				if (!texture.pending) continue;
 				const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
+				const uint32_t blockSize = textureStorageBlockSize(texture.format);
 				for (TextureLevel& level : texture.levels)
 					for (TextureStage& stage : level.slices)
 					{
 						for (const Rect& rect : stage.dirty)
 						{
-						const uint32_t offset = (rect.m_y/info.blockHeight*level.source.pitch+rect.m_x/info.blockWidth)*info.blockSize;
+						const uint32_t offset = (rect.m_y/info.blockHeight*level.source.pitch+rect.m_x/info.blockWidth)*blockSize;
 						const uint32_t rows = (rect.m_height+info.blockHeight-1)/info.blockHeight;
-						const uint32_t bytes = ((rows-1)*level.source.pitch+(rect.m_width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
+						const uint32_t bytes = ((rows-1)*level.source.pitch+(rect.m_width+info.blockWidth-1)/info.blockWidth)*blockSize;
 						DCStoreRangeNoSync((uint8_t*)stage.block->data+offset, bytes);
 						published = true;
 						}
@@ -1244,14 +1283,15 @@ namespace bgfx { namespace gx2
 				else
 				{
 					const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(texture.format));
-					const uint32_t rowBytes = ((level.source.width+info.blockWidth-1)/info.blockWidth)*info.blockSize;
+					const uint32_t blockSize = textureStorageBlockSize(texture.format);
+					const uint32_t rowBytes = ((level.source.width+info.blockWidth-1)/info.blockWidth)*blockSize;
 					const uint32_t rows = (level.source.height+info.blockHeight-1)/info.blockHeight;
 					for (uint32_t slice = first; slice < first+count; ++slice)
 					{
 						TextureStage& stage = textureStage(texture, mip, slice);
 						for (uint32_t row = 0; row < rows; ++row)
 						{
-							uint8_t* dst = (uint8_t*)stage.block->data+row*level.source.pitch*info.blockSize;
+							uint8_t* dst = (uint8_t*)stage.block->data+row*level.source.pitch*blockSize;
 							bx::memSet(dst, 0, rowBytes);
 						}
 						stage.dirty.assign(1, {0, 0, uint16_t(level.source.width), uint16_t(level.source.height)});
@@ -1976,10 +2016,9 @@ namespace bgfx { namespace gx2
 			// Copy uses a GPU output cache; retirement must cover its publication too.
 			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, block->data, block->size);
 			touch(block);
-			const bimg::ImageBlockInfo& info = bimg::getBlockInfo(bimg::TextureFormat::Enum(_format));
 			_output.block = block;
 			_output.width = staging.width; _output.height = staging.height;
-			_output.pitch = GX2GetSurfaceMipPitch(&staging, 0)*info.blockSize;
+			_output.pitch = GX2GetSurfaceMipPitch(&staging, 0)*textureStorageBlockSize(_format);
 			_output.rowBytes = calcTextureRegionPitch(_format, staging.width);
 			_output.rows = calcTextureRegionNumRows(_format, staging.height);
 			_output.format = _format;
@@ -2078,9 +2117,17 @@ namespace bgfx { namespace gx2
 				DCInvalidateRange(output.block->data, output.block->size);
 				if (output.kind == TransferOutput::TextureRead)
 				{
+					const uint32_t blockSize = textureStorageBlockSize(output.format);
+					const uint32_t packedSize = bimg::getBlockInfo(bimg::TextureFormat::Enum(output.format)).blockSize;
 					for (uint32_t row = 0; row < output.rows; ++row)
-						bx::memCopy((uint8_t*)output.destination+row*output.rowBytes,
-							(const uint8_t*)output.block->data+row*output.pitch, output.rowBytes);
+					{
+						uint8_t* dst = (uint8_t*)output.destination+row*output.rowBytes;
+						const uint8_t* src = (const uint8_t*)output.block->data+row*output.pitch;
+						if (blockSize != packedSize)
+							for (uint32_t pixel = 0; pixel < output.width; ++pixel)
+								bx::memCopy(dst+pixel*packedSize, src+pixel*blockSize, packedSize);
+						else bx::memCopy(dst, src, output.rowBytes);
+					}
 				}
 				else if (output.kind == TransferOutput::ScreenShot)
 				{
