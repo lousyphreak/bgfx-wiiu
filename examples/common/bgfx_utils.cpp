@@ -433,6 +433,81 @@ namespace bgfx
 	int32_t read(bx::ReaderI* _reader, bgfx::VertexLayout& _layout, bx::Error* _err);
 }
 
+#if BX_PLATFORM_WIIU
+namespace
+{
+	void readMeshBounds(bx::ReaderI* _reader, bx::Sphere& _sphere, bx::Aabb& _aabb, bx::Obb& _obb, bx::Error* _err)
+	{
+		auto readFloat = [=](float& _value)
+		{
+			uint32_t bits;
+			bx::readHE(_reader, bits, true, _err);
+			_value = bx::bitsToFloat(bits);
+		};
+
+		readFloat(_sphere.center.x);
+		readFloat(_sphere.center.y);
+		readFloat(_sphere.center.z);
+		readFloat(_sphere.radius);
+		readFloat(_aabb.min.x);
+		readFloat(_aabb.min.y);
+		readFloat(_aabb.min.z);
+		readFloat(_aabb.max.x);
+		readFloat(_aabb.max.y);
+		readFloat(_aabb.max.z);
+		for (float& value : _obb.mtx)
+		{
+			readFloat(value);
+		}
+	}
+
+	void meshVerticesToHostEndian(void* _data, uint32_t _numVertices, const bgfx::VertexLayout& _layout)
+	{
+#if BX_CPU_ENDIAN_BIG
+		for (uint32_t attr = 0; attr < bgfx::Attrib::Count; ++attr)
+		{
+			const bgfx::Attrib::Enum attrib = bgfx::Attrib::Enum(attr);
+			if (!_layout.has(attrib) )
+			{
+				continue;
+			}
+
+			uint8_t num;
+			bgfx::AttribType::Enum type;
+			bool normalized;
+			bool asInt;
+			_layout.decode(attrib, num, type, normalized, asInt);
+			if (bgfx::AttribType::Uint8 == type
+			||  bgfx::AttribType::Int8  == type)
+			{
+				continue;
+			}
+
+			const uint32_t size = (bgfx::AttribType::Int16  == type
+							   || bgfx::AttribType::Uint16 == type
+							   || bgfx::AttribType::Half   == type) ? 2 : 4;
+			// Uint10 components share a single packed word.
+			num = bgfx::AttribType::Uint10 == type ? 1 : num;
+			uint8_t* vertex = (uint8_t*)_data + _layout.getOffset(attrib);
+			for (uint32_t ii = 0; ii < _numVertices; ++ii, vertex += _layout.getStride() )
+			{
+				for (uint32_t component = 0; component < num; ++component)
+				{
+					uint8_t* value = vertex + component*size;
+					for (uint32_t byte = 0; byte < size/2; ++byte)
+					{
+						bx::swap(value[byte], value[size - 1 - byte]);
+					}
+				}
+			}
+		}
+#else
+		BX_UNUSED(_data, _numVertices, _layout);
+#endif // BX_CPU_ENDIAN_BIG
+	}
+} // namespace
+
+#endif // BX_PLATFORM_WIIU
 void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 {
 	constexpr uint32_t kChunkVertexBuffer           = BX_MAKEFOURCC('V', 'B', ' ', 0x1);
@@ -450,24 +525,39 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 
 	uint32_t chunk;
 	bx::Error err;
+#if BX_PLATFORM_WIIU
+	while (4 == bx::readHE(_reader, chunk, true, &err)
+#else
 	while (4 == bx::read(_reader, chunk, &err)
+#endif // BX_PLATFORM_WIIU
 	   &&  err.isOk() )
 	{
 		switch (chunk)
 		{
 			case kChunkVertexBuffer:
 			{
+#if BX_PLATFORM_WIIU
+				readMeshBounds(_reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
+#else
 				read(_reader, group.m_sphere, &err);
 				read(_reader, group.m_aabb, &err);
 				read(_reader, group.m_obb, &err);
+#endif // BX_PLATFORM_WIIU
 
 				read(_reader, m_layout, &err);
 
 				uint16_t stride = m_layout.getStride();
 
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, group.m_numVertices, true, &err);
+				const bgfx::Memory* mem = bgfx::alloc(group.m_numVertices*stride);
+				read(_reader, mem->data, mem->size, &err);
+				meshVerticesToHostEndian(mem->data, group.m_numVertices, m_layout);
+#else
 				read(_reader, group.m_numVertices, &err);
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numVertices*stride);
 				read(_reader, mem->data, mem->size, &err);
+#endif // BX_PLATFORM_WIIU
 
 				if (_ramcopy)
 				{
@@ -481,25 +571,43 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 
 			case kChunkVertexBufferCompressed:
 			{
+#if BX_PLATFORM_WIIU
+				readMeshBounds(_reader, group.m_sphere, group.m_aabb, group.m_obb, &err);
+#else
 				read(_reader, group.m_sphere, &err);
 				read(_reader, group.m_aabb, &err);
 				read(_reader, group.m_obb, &err);
+#endif // BX_PLATFORM_WIIU
 
 				read(_reader, m_layout, &err);
 
 				uint16_t stride = m_layout.getStride();
 
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, group.m_numVertices, true, &err);
+#else
 				read(_reader, group.m_numVertices, &err);
+#endif // BX_PLATFORM_WIIU
 
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numVertices*stride);
 
 				uint32_t compressedSize;
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, compressedSize, true, &err);
+#else
 				bx::read(_reader, compressedSize, &err);
+#endif // BX_PLATFORM_WIIU
 
 				void* compressedVertices = bx::alloc(allocator, compressedSize);
 				bx::read(_reader, compressedVertices, compressedSize, &err);
 
+#if BX_PLATFORM_WIIU
+				// Vertex decoding restores the original little-endian bytes.
 				meshopt_decodeVertexBuffer(mem->data, group.m_numVertices, stride, (uint8_t*)compressedVertices, compressedSize);
+				meshVerticesToHostEndian(mem->data, group.m_numVertices, m_layout);
+#else
+				meshopt_decodeVertexBuffer(mem->data, group.m_numVertices, stride, (uint8_t*)compressedVertices, compressedSize);
+#endif // BX_PLATFORM_WIIU
 
 				bx::free(allocator, compressedVertices);
 
@@ -515,10 +623,22 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 
 			case kChunkIndexBuffer:
 			{
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, group.m_numIndices, true, &err);
+
+				const bgfx::Memory* mem = bgfx::alloc(group.m_numIndices*2);
+				read(_reader, mem->data, mem->size, &err);
+				uint16_t* indices = (uint16_t*)mem->data;
+				for (uint32_t ii = 0; ii < group.m_numIndices; ++ii)
+				{
+					indices[ii] = bx::toLittleEndian(indices[ii]);
+				}
+#else
 				read(_reader, group.m_numIndices, &err);
 
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numIndices*2);
 				read(_reader, mem->data, mem->size, &err);
+#endif // BX_PLATFORM_WIIU
 
 				if (_ramcopy)
 				{
@@ -532,17 +652,28 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 
 			case kChunkIndexBufferCompressed:
 			{
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, group.m_numIndices, true, &err);
+#else
 				bx::read(_reader, group.m_numIndices, &err);
+#endif // BX_PLATFORM_WIIU
 
 				const bgfx::Memory* mem = bgfx::alloc(group.m_numIndices*2);
 
 				uint32_t compressedSize;
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, compressedSize, true, &err);
+#else
 				bx::read(_reader, compressedSize, &err);
+#endif // BX_PLATFORM_WIIU
 
 				void* compressedIndices = bx::alloc(allocator, compressedSize);
 
 				bx::read(_reader, compressedIndices, compressedSize, &err);
 
+#if BX_PLATFORM_WIIU
+				// The index decoder writes native uint16_t values.
+#endif // BX_PLATFORM_WIIU
 				meshopt_decodeIndexBuffer(mem->data, group.m_numIndices, 2, (uint8_t*)compressedIndices, compressedSize);
 
 				bx::free(allocator, compressedIndices);
@@ -560,24 +691,43 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 			case kChunkPrimitive:
 			{
 				uint16_t len;
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, len, true, &err);
+#else
 				read(_reader, len, &err);
+#endif // BX_PLATFORM_WIIU
 
 				stl::string material;
 				material.resize(len);
 				read(_reader, const_cast<char*>(material.c_str() ), len, &err);
 
 				uint16_t num;
+#if BX_PLATFORM_WIIU
+				bx::readHE(_reader, num, true, &err);
+
+				for (uint32_t ii = 0; ii < num; ++ii)
+				{
+					bx::readHE(_reader, len, true, &err);
+#else
 				read(_reader, num, &err);
 
 				for (uint32_t ii = 0; ii < num; ++ii)
 				{
 					read(_reader, len, &err);
+#endif // BX_PLATFORM_WIIU
 
 					stl::string name;
 					name.resize(len);
 					read(_reader, const_cast<char*>(name.c_str() ), len, &err);
 
 					Primitive prim;
+#if BX_PLATFORM_WIIU
+					bx::readHE(_reader, prim.m_startIndex, true, &err);
+					bx::readHE(_reader, prim.m_numIndices, true, &err);
+					bx::readHE(_reader, prim.m_startVertex, true, &err);
+					bx::readHE(_reader, prim.m_numVertices, true, &err);
+					readMeshBounds(_reader, prim.m_sphere, prim.m_aabb, prim.m_obb, &err);
+#else
 					read(_reader, prim.m_startIndex, &err);
 					read(_reader, prim.m_numIndices, &err);
 					read(_reader, prim.m_startVertex, &err);
@@ -585,6 +735,7 @@ void Mesh::load(bx::ReaderSeekerI* _reader, bool _ramcopy)
 					read(_reader, prim.m_sphere, &err);
 					read(_reader, prim.m_aabb, &err);
 					read(_reader, prim.m_obb, &err);
+#endif // BX_PLATFORM_WIIU
 
 					group.m_prims.push_back(prim);
 				}
