@@ -2638,21 +2638,21 @@ namespace bgfx { namespace gx2
 			// update() and gpuBufferWritten() publish once at the producer boundary.
 			const uint32_t endian = buffer.littleEndian ? 0 : index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
 			alignas(64) uint32_t commands[] = {
-				bx::toLittleEndian(UINT32_C(0xc0076900)), // SET_RESOURCE, register + 7 words
+				UINT32_C(0xc0076900), // SET_RESOURCE, register + 7 words
 				0,
-				bx::toLittleEndian(OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data))+offset)),
-				bx::toLittleEndian(size-1),
-				bx::toLittleEndian((4u << 8) | (13u << 20) | (1u << 26) | (endian << 30)),
-				bx::toLittleEndian(1u), 0, 0, bx::toLittleEndian(UINT32_C(0xc0000000)),
+				OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data))+offset),
+				size-1,
+				(4u << 8) | (13u << 20) | (1u << 26) | (endian << 30),
+				1u, 0, 0, UINT32_C(0xc0000000),
 			};
 			if ((m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex)->rawSrvMask & (1u << _unit))
 			{
-				commands[1] = bx::toLittleEndian(0x460u+7*_unit);
+				commands[1] = 0x460u+7*_unit;
 				GX2CopyDisplayList(commands, sizeof(commands));
 			}
 			if (m_boundProgram->fragment && (m_boundProgram->fragment->rawSrvMask & (1u << _unit)))
 			{
-				commands[1] = bx::toLittleEndian(7*_unit);
+				commands[1] = 7*_unit;
 				GX2CopyDisplayList(commands, sizeof(commands));
 			}
 			m_boundTextures[_unit] = NULL; // A later texture must replace this descriptor.
@@ -2671,6 +2671,7 @@ namespace bgfx { namespace gx2
 					readonlyBuffer(bind, ii);
 					continue;
 				}
+				if (!m_boundProgram->vertex->samplerDimensions[ii] && !m_boundProgram->fragment->samplerDimensions[ii]) continue;
 				if (bind.m_type != Binding::Texture) { unsupported("image and compute bindings"); continue; }
 				Texture& texture = m_textures[bind.m_idx];
 				const uint32_t flags = bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? uint32_t(texture.flags) : bind.m_samplerFlags;
