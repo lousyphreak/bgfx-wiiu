@@ -33,8 +33,7 @@ foreach(shader IN ITEMS
     fs_gx2_copy_depth_2d fs_gx2_copy_depth_array fs_gx2_copy_depth_3d
     fs_gx2_copy_uint_2d fs_gx2_copy_uint_array fs_gx2_copy_uint_3d
     fs_gx2_copy_int_2d fs_gx2_copy_int_array fs_gx2_copy_int_3d
-    fs_gx2_resolve_uint_2d fs_gx2_resolve_uint_array
-    fs_gx2_resolve_int_2d fs_gx2_resolve_int_array
+    fs_gx2_clear_uint fs_gx2_clear_int
     vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
     if(shader MATCHES "^vs_")
         set(stage vertex)
@@ -43,7 +42,7 @@ foreach(shader IN ITEMS
     endif()
     set(raw_options "")
     set(depfile_options DEPFILE ${generated_dir}/${shader}.gx2.bin.h.d)
-    if(shader MATCHES "^fs_gx2_(copy|resolve)_")
+    if(shader MATCHES "^fs_gx2_(copy|clear)_")
         set(raw_options --raw)
         set(depfile_options "")
     endif()
