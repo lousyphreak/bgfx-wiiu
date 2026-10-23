@@ -1740,7 +1740,9 @@ namespace bgfx
 		{
 			if (profile->lang == ShadingLang::Gx2)
 			{
-				compiled = compileGx2Shader(_options, profile->id, input, _shaderWriter, _messageWriter);
+				Options rawOptions = _options;
+				rawOptions.raw = true; // Also honor the source-level $raw directive.
+				compiled = compileGx2Shader(rawOptions, profile->id, input, _shaderWriter, _messageWriter);
 			}
 			else if (profile->lang == ShadingLang::GLSL)
 			{
@@ -2415,14 +2417,9 @@ namespace bgfx
 								}
 								else if (!bx::findIdentifierMatch(input, "gl_FragData").isEmpty())
 								{
-									uint32_t outputs = 1;
-									for (uint32_t ii = 0; ii < 8; ++ii)
-									{
-										char name[32];
-										bx::snprintf(name, sizeof(name), "gl_FragData[%u]", ii);
-										if (!bx::strFind(input, name).isEmpty()) outputs = ii + 1;
-									}
-									bx::stringPrintf(code, "layout(location=0) out vec4 bgfx_FragData[%u];\n#define gl_FragData bgfx_FragData\n", outputs);
+									// Latte has eight color exports. CafeGLSL removes unwritten outputs,
+									// so constant expressions and whitespace need no source-level scan.
+									code += "layout(location=0) out vec4 bgfx_FragData[8];\n#define gl_FragData bgfx_FragData\n";
 								}
 							}
 							code += _comment;

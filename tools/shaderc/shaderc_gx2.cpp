@@ -57,6 +57,54 @@ namespace bgfx
 			return true;
 		}
 
+		struct SamplerDeclaration
+		{
+			std::string type;
+			uint32_t count;
+		};
+
+		typedef std::unordered_map<std::string, SamplerDeclaration> SamplerDeclarations;
+
+		bool samplerDeclarations(const std::string& _code, SamplerDeclarations& _result, bx::WriterI* _messages)
+		{
+			const std::regex declaration(R"(\buniform\s+(?:(?:lowp|mediump|highp)\s+)?([iu]?sampler[A-Za-z0-9]+)\s+([^;]+);)");
+			const std::regex declarator(R"(^\s*([A-Za-z_][A-Za-z0-9_]*)\s*((?:\[[^\]]*\]\s*)*)$)");
+			const std::regex extent(R"(^\[\s*(0[xX][0-9a-fA-F]+|[0-9]+)[uU]?\s*\]\s*$)");
+			for (std::sregex_iterator it(_code.begin(), _code.end(), declaration), end; it != end; ++it)
+			{
+				const std::string type = (*it)[1].str();
+				const std::string names = (*it)[2].str();
+				for (size_t begin = 0; begin < names.size(); )
+				{
+					const size_t comma = names.find(',', begin);
+					const std::string name = names.substr(begin, comma == std::string::npos ? comma : comma - begin);
+					std::smatch match;
+					if (std::regex_match(name, match, declarator))
+					{
+						uint32_t count = 1;
+						const std::string dimensions = match[2].str();
+						if (dimensions.find('[', 1) != std::string::npos)
+						{
+							bx::ErrorAssert err;
+							bx::write(_messages, &err, "GX2: multidimensional sampler %s lacks complete compiler reflection; use a one-dimensional sampler array.\n", match[1].str().c_str());
+							return false;
+						}
+						if (!dimensions.empty())
+						{
+							std::smatch dimension;
+							const unsigned long size = std::regex_match(dimensions, dimension, extent)
+								? strtoul(dimension[1].str().c_str(), NULL, 0) : 0;
+							count = size <= 16 ? uint32_t(size) : 0;
+						}
+						_result[match[1].str()] = { type, count };
+					}
+					if (comma == std::string::npos) break;
+					begin = comma + 1;
+				}
+			}
+			return true;
+		}
+
 		template<typename Shader>
 		bool writeStage(const Options& _options, const Shader& _shader, const std::string& _code,
 			const std::vector<uint8_t>& _gfd, bx::WriterI* _writer, bx::WriterI* _messages)
@@ -67,7 +115,7 @@ namespace bgfx
 			{
 				const GX2UniformVar& var = _shader.uniformVars[ii];
 				// CafeGLSL emits an aggregate record and per-element aliases. Bind the aggregate once.
-				const char* bracket = strchr(var.name, '[');
+				const char* bracket = strrchr(var.name, '[');
 				if (bracket != NULL)
 				{
 					const std::string aggregate(var.name, bracket);
@@ -84,11 +132,15 @@ namespace bgfx
 						}
 					}
 					if (alias) continue;
-					bx::write(_messages, &err, "GX2: compound uniform %s is outside the bgfx loose-array ABI.\n", var.name);
+				}
+				if (strchr(var.name, '.') != NULL)
+				{
+					bx::write(_messages, &err, "GX2: struct uniform %s cannot use a bgfx uniform handle; declare vec4/mat3/mat4 uniforms or arrays instead.\n", var.name);
 					return false;
 				}
 				Uniform uniform;
-				uniform.name = var.name;
+				// Homogeneous multidimensional arrays flatten to the same bgfx handle.
+				uniform.name.assign(var.name, strcspn(var.name, "["));
 				uint32_t rows;
 				switch (var.type)
 				{
@@ -112,31 +164,47 @@ namespace bgfx
 				uniform.num = uint8_t(var.count);
 				uniform.regIndex = uint16_t(var.offset); // Native reflection uses four-byte units.
 				uniform.regCount = uint16_t(rows * var.count);
-				uniforms.push_back(uniform);
+				auto aggregate = std::find_if(uniforms.begin(), uniforms.end(), [&](const Uniform& _other) { return _other.name == uniform.name; });
+				if (aggregate != uniforms.end())
+				{
+					if (aggregate->type != uniform.type || aggregate->regIndex + aggregate->regCount * 4 != uniform.regIndex
+					|| uint32_t(aggregate->num) + uniform.num > UINT8_MAX)
+					{
+						bx::write(_messages, &err, "GX2: multidimensional uniform %s cannot be flattened into a contiguous bgfx array.\n", var.name);
+						return false;
+					}
+					aggregate->num = uint8_t(aggregate->num + uniform.num);
+					aggregate->regCount += uniform.regCount;
+				}
+				else
+				{
+					uniforms.push_back(uniform);
+				}
 			}
 
-			// GX2 reflection omits sampler array/integer/compare shape; retain it from the GLSL declarations.
-			struct SamplerDeclaration { std::string type; bool array; };
-			std::unordered_map<std::string, SamplerDeclaration> samplerTypes;
-			const std::regex declaration(R"(\buniform\s+(?:(?:lowp|mediump|highp)\s+)?([iu]?sampler[A-Za-z0-9]+)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\[)?)");
-			for (std::sregex_iterator it(_code.begin(), _code.end(), declaration), end; it != end; ++it)
-			{
-				samplerTypes[(*it)[2].str()] = { (*it)[1].str(), (*it)[3].matched };
-			}
+			// GX2 reflection omits sampler counts and integer/compare/array texture shape.
+			SamplerDeclarations declarations;
+			if (!samplerDeclarations(_code, declarations, _messages)) return false;
 			for (uint32_t ii = 0; ii < _shader.samplerVarCount; ++ii)
 			{
 				const GX2SamplerVar& sampler = _shader.samplerVars[ii];
 				Uniform uniform;
 				uniform.name = sampler.name;
-				uniform.num = 1;
-				uniform.regIndex = uint16_t(sampler.location);
-				uniform.regCount = 1;
-				const auto type = samplerTypes.find(uniform.name);
-				if (sampler.location >= 16 || type == samplerTypes.end() || type->second.array || !samplerMetadata(uniform, type->second.type))
+				const auto declaration = declarations.find(uniform.name);
+				if (declaration == declarations.end() || declaration->second.count == 0)
 				{
-					bx::write(_messages, &err, "GX2: unsupported sampler declaration/binding for %s.\n", sampler.name);
+					bx::write(_messages, &err, "GX2: sampler %s requires a plain declaration with a literal array size in 1..16 (macros may expand to literals).\n", sampler.name);
 					return false;
 				}
+				const uint32_t count = declaration->second.count;
+				if (sampler.location + count > 16 || !samplerMetadata(uniform, declaration->second.type))
+				{
+					bx::write(_messages, &err, "GX2: unsupported sampler type or binding range for %s (binding %u, count %u; bgfx GX2 exposes 16 slots).\n", sampler.name, sampler.location, count);
+					return false;
+				}
+				uniform.num = uint8_t(count);
+				uniform.regIndex = uint16_t(sampler.location);
+				uniform.regCount = uint16_t(count);
 				uniforms.push_back(uniform);
 			}
 
