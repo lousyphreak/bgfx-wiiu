@@ -365,10 +365,17 @@ namespace ps
 				uint32_t rgbaStart = particle.rgba[idx];
 				uint32_t rgbaEnd   = particle.rgba[idx+1];
 
+#if BX_PLATFORM_WIIU
+				float rr = bx::lerp( float( (rgbaStart >> 0) & 0xff), float( (rgbaEnd >> 0) & 0xff), ttmod)/255.0f;
+				float gg = bx::lerp( float( (rgbaStart >> 8) & 0xff), float( (rgbaEnd >> 8) & 0xff), ttmod)/255.0f;
+				float bb = bx::lerp( float( (rgbaStart >> 16) & 0xff), float( (rgbaEnd >> 16) & 0xff), ttmod)/255.0f;
+				float aa = bx::lerp( float( (rgbaStart >> 24) & 0xff), float( (rgbaEnd >> 24) & 0xff), ttmod)/255.0f;
+#else
 				float rr = bx::lerp( ( (uint8_t*)&rgbaStart)[0], ( (uint8_t*)&rgbaEnd)[0], ttmod)/255.0f;
 				float gg = bx::lerp( ( (uint8_t*)&rgbaStart)[1], ( (uint8_t*)&rgbaEnd)[1], ttmod)/255.0f;
 				float bb = bx::lerp( ( (uint8_t*)&rgbaStart)[2], ( (uint8_t*)&rgbaEnd)[2], ttmod)/255.0f;
 				float aa = bx::lerp( ( (uint8_t*)&rgbaStart)[3], ( (uint8_t*)&rgbaEnd)[3], ttmod)/255.0f;
+#endif // BX_PLATFORM_WIIU
 
 				float blend = bx::lerp(particle.blendStart, particle.blendEnd, ttBlend);
 				float scale = bx::lerp(particle.scaleStart, particle.scaleEnd, ttScale);
