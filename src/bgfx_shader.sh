@@ -978,7 +978,7 @@ uniform vec4 u_alphaRef4;
 uniform mat4 u_model[BGFX_CONFIG_MAX_BONES];
 
 #if BGFX_SHADER_LANGUAGE_GX2
-#	define bgfx_ndc vec4(1.0, 0.0, 1.0, 1.0)
+#	define bgfx_ndc vec4(1.0, 0.0, -1.0, 1.0)
 #elif BGFX_SHADER_LANGUAGE_GLSL
 uniform vec4 bgfx_ndc;
 #endif // BGFX_SHADER_LANGUAGE_GLSL
