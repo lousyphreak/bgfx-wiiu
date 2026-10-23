@@ -1,7 +1,7 @@
 # Original bgfx applications, sharing one SDL3/GX2 entry implementation.
 find_package(SDL3 REQUIRED CONFIG)
 set(BGFX_WIIU_EXAMPLES
-    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky;38-bloom;40-svt;42-bunnylod;43-denoise;44-sss;45-bokeh;47-pixelformats;49-hextile;50-headless;51-gpufont;52-layered"
+    "00-helloworld;01-cubes;02-metaballs;03-raymarch;04-mesh;05-instancing;06-bump;07-callback;08-update;09-hdr;10-font;11-fontsdf;12-lod;13-stencil;14-shadowvolumes;15-shadowmaps-simple;16-shadowmaps;17-drawstress;18-ibl;19-oit;20-nanovg;21-deferred;22-windows;23-vectordisplay;25-c99;26-occlusion;27-terrain;28-wireframe;29-debugdraw;30-picking;31-rsm;32-particles;33-pom;34-mvs;35-dynamic;36-sky;38-bloom;40-svt;42-bunnylod;43-denoise;44-sss;45-bokeh;47-pixelformats;49-hextile;50-headless;51-gpufont;52-layered;54-s2h"
     CACHE STRING "Numbered example directories to build")
 if("25-c99" IN_LIST BGFX_WIIU_EXAMPLES OR "42-bunnylod" IN_LIST BGFX_WIIU_EXAMPLES)
     enable_language(C)
@@ -114,8 +114,12 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         BYPRODUCTS "${package_dir}/code/${example}.rpx"
         VERBATIM)
 
-    # Graphics-stage assets; compute programs need compiler/backend implementation.
+    # Graphics assets are universal; native compute assets are selected explicitly.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
+    if(example MATCHES "^(46-fsr|48-drawindirect|53-sky2)$")
+        file(GLOB compute_sources CONFIGURE_DEPENDS "${example_dir}/cs_*.sc")
+        list(APPEND shader_sources ${compute_sources})
+    endif()
     if(example STREQUAL "21-deferred")
         # The original application gates UAV programs on IMAGE_RW, absent on GX2.
         list(FILTER shader_sources EXCLUDE REGEX "_uav\\.sc$")
@@ -124,6 +128,11 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         list(APPEND shader_sources
             "${BGFX_DIR}/examples/01-cubes/vs_cubes.sc"
             "${BGFX_DIR}/examples/01-cubes/fs_cubes.sc")
+    endif()
+    if(example STREQUAL "48-drawindirect")
+        list(APPEND shader_sources
+            "${BGFX_DIR}/examples/05-instancing/vs_instancing.sc"
+            "${BGFX_DIR}/examples/05-instancing/fs_instancing.sc")
     endif()
     # Embedded example shaders need the same GX2 symbols as common ImGui.
     set(example_source_text "")
@@ -138,8 +147,16 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         get_filename_component(shader_dir "${source}" DIRECTORY)
         if(shader MATCHES "^vs_")
             set(stage vertex)
+        elseif(shader MATCHES "^cs_")
+            set(stage compute)
         else()
             set(stage fragment)
+        endif()
+        set(varying_file "")
+        set(varying_options "")
+        if(NOT stage STREQUAL "compute")
+            set(varying_file "${shader_dir}/varying.def.sc")
+            set(varying_options --varyingdef "${varying_file}")
         endif()
         set(bin2c_options "")
         string(FIND "${example_source_text}" "${shader}.bin.h" embedded_include)
@@ -155,9 +172,9 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_dir}"
             COMMAND "${BGFX_SHADERC}" -f "${source}" -o "${output}"
                 --type ${stage} --platform wiiu -p gx2 ${bin2c_options}
-                --varyingdef "${shader_dir}/varying.def.sc"
+                ${varying_options}
                 -i "${BGFX_DIR}/src;${common_dir}" --depends
-            DEPENDS "${BGFX_SHADERC}" "${source}" "${shader_dir}/varying.def.sc"
+            DEPENDS "${BGFX_SHADERC}" "${source}" ${varying_file}
                 "${BGFX_DIR}/src/bgfx_shader.sh"
             DEPFILE "${output}.d"
             VERBATIM)
