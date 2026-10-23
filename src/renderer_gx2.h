@@ -58,12 +58,26 @@ namespace bgfx { namespace gx2
 		uint32_t frameNum = 0;
 	};
 
+	struct TransferOutput
+	{
+		enum Kind { TextureRead, ScreenShot, CaptureFrame, CaptureEnd };
+		Kind kind = TextureRead;
+		Block* block = NULL;
+		void* destination = NULL;
+		uint32_t deadline = 0;
+		uint32_t width = 0, height = 0, pitch = 0;
+		uint32_t rowBytes = 0, rows = 0;
+		TextureFormat::Enum format = TextureFormat::Unknown;
+		std::vector<char> path;
+	};
+
 	struct Buffer
 	{
 		Block* block = NULL;
 		std::vector<Block*> spare;
 		uint32_t size = 0;
 		uint16_t flags = 0;
+		bool gpuWritten = false;
 		VertexLayoutHandle layout = BGFX_INVALID_HANDLE;
 	};
 
@@ -84,6 +98,7 @@ namespace bgfx { namespace gx2
 		std::vector<PredefinedUniform> predefined;
 		uint32_t uniformSize = 0;
 		bool fragment = false;
+		uint8_t samplerDimensions[16] = {}; // TextureDimension + 1; zero is unused.
 	};
 
 	struct Fetch
@@ -109,6 +124,7 @@ namespace bgfx { namespace gx2
 		Block* block = NULL;
 		std::vector<Block*> spare;
 		std::vector<Rect> dirty;
+		bool renderDirty = false;
 	};
 
 	struct TextureLevel
@@ -126,6 +142,10 @@ namespace bgfx { namespace gx2
 	struct Texture
 	{
 		GX2Texture texture = {};
+		GX2Texture arrayView = {};
+		Block* arrayImage = NULL;
+		std::vector<Block*> spareArrayImages;
+		bool arrayDirty = true;
 		Block* image = NULL;
 		GX2Surface renderSurface = {};
 		GX2Surface depthSamples = {}, resolvedDepth = {};
