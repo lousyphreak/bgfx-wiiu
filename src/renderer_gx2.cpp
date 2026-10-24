@@ -156,6 +156,17 @@ namespace bgfx { namespace gx2
 		case TextureFormat::RG16S:
 		case TextureFormat::RG16F:
 		case TextureFormat::RG32F:
+		case TextureFormat::RGBA8S:
+		case TextureFormat::RGBA16S:
+		case TextureFormat::A8:
+		case TextureFormat::R5G6B5:
+		case TextureFormat::B5G6R5:
+		case TextureFormat::RGBA4:
+		case TextureFormat::BGRA4:
+		case TextureFormat::RGB5A1:
+		case TextureFormat::BGR5A1:
+		case TextureFormat::RGB10A2:
+		case TextureFormat::RG11B10F:
 			return true;
 		default:
 			return MipGen::isSupported(_format);
@@ -1924,7 +1935,18 @@ namespace bgfx { namespace gx2
 				{
 					GX2Texture source = cube ? _texture.arrayView : _texture.texture; source.viewFirstMip = mip-1; source.viewNumMips = 1;
 					source.surface.format = textureFormat(_texture.format, _view.srgb, source.compMap);
-					if (_texture.format == TextureFormat::BGRA8) source.compMap = GX2_COMP_MAP(0, 1, 2, 3); // Filter storage channels.
+					// Filter storage channels rather than logical alpha/BGR routing.
+					switch (_texture.format)
+					{
+					case TextureFormat::A8: source.compMap = GX2_COMP_MAP(0, 4, 4, 5); break;
+					case TextureFormat::BGRA8:
+					case TextureFormat::BGRA4:
+					case TextureFormat::BGR5A1: source.compMap = GX2_COMP_MAP(0, 1, 2, 3); break;
+					case TextureFormat::R5G6B5:
+					case TextureFormat::B5G6R5:
+					case TextureFormat::RG11B10F: source.compMap = GX2_COMP_MAP(0, 1, 2, 5); break;
+					default: break;
+					}
 					if (!volume) { source.surface.dim = array ? GX2_SURFACE_DIM_TEXTURE_2D_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D; source.viewFirstSlice = slice; source.viewNumSlices = 1; }
 					GX2InitTextureRegs(&source);
 					GX2ColorBuffer dest = {}; dest.surface = surface; dest.surface.format = source.surface.format; dest.viewMip = mip; dest.viewFirstSlice = slice; dest.viewNumSlices = 1; GX2InitColorBufferRegs(&dest);
