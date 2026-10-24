@@ -2362,10 +2362,15 @@ namespace bgfx { namespace gx2
 			Texture& src = m_textures[_blit.m_src.idx];
 			Texture& dst = m_textures[_blit.m_dst.idx];
 			const uint16_t count = bx::max<uint16_t>(1, _blit.m_depth);
-			GX2Surface source = transferSource(src, _blit.m_srcMip, _blit.m_srcZ, count);
+			const bool resolve = src.auxiliary && src.texture.surface.aa != GX2_AA_MODE1X
+				&& dst.texture.surface.aa == GX2_AA_MODE1X && !bimg::isDepth(bimg::TextureFormat::Enum(src.format));
+			// Native resolve consumes compressed color/aux directly. Keep pending
+			// source expansion for a later multisample sampling consumer.
+			GX2Surface source = resolve ? src.texture.surface : transferSource(src, _blit.m_srcMip, _blit.m_srcZ, count);
 			GX2Surface destination = transferDestination(dst, _blit.m_dstMip, _blit.m_dstZ, count, {int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), _blit.m_width, _blit.m_height});
-			// bgfx blits preserve stored values, including between UNORM/sRGB views.
-			source.format = GX2SurfaceFormat(uint32_t(source.format) & ~0x400u);
+			// Raw copies preserve stored values across UNORM/sRGB views. Arithmetic
+			// resolves retain the source encoding for gamma-correct averaging.
+			if (!resolve) source.format = GX2SurfaceFormat(uint32_t(source.format) & ~0x400u);
 			destination.format = source.format;
 			const uint32_t width = bx::min<uint32_t>(_blit.m_width,
 				bx::max(1u, source.width >> _blit.m_srcMip)-_blit.m_srcX,
@@ -2376,6 +2381,17 @@ namespace bgfx { namespace gx2
 			const bool full = !(_blit.m_srcX | _blit.m_srcY | _blit.m_dstX | _blit.m_dstY)
 				&& width == bx::max(1u, source.width >> _blit.m_srcMip) && height == bx::max(1u, source.height >> _blit.m_srcMip)
 				&& width == bx::max(1u, destination.width >> _blit.m_dstMip) && height == bx::max(1u, destination.height >> _blit.m_dstMip);
+			if (resolve)
+			{
+				if (!full) { unsupported("partial sampled-MSAA color resolve"); return; }
+				GX2ColorBuffer color = colorBuffer(src, {_blit.m_srcMip, _blit.m_srcZ, count});
+				color.surface.format = source.format; GX2InitColorBufferRegs(&color);
+				GX2ResolveAAColorBuffer(&color, &destination, _blit.m_dstMip, _blit.m_dstZ);
+				if (src.image) touch(src.image);
+				if (src.auxiliary) touch(src.auxiliary);
+				transferWritten(dst, _blit.m_dstMip, _blit.m_dstZ, count);
+				return;
+			}
 			if (!full && bimg::isCompressed(bimg::TextureFormat::Enum(src.format)) && ((width | height) & 3))
 			{
 				if ((_blit.m_srcX | _blit.m_srcY | _blit.m_dstX | _blit.m_dstY) & 3) { unsupported("BC blit origin must address complete compressed blocks"); return; }
