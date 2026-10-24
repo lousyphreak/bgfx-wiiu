@@ -502,6 +502,10 @@ public:
 			"textures/texture_compression_bc1.ktx",
 			"textures/texture_compression_bc2.ktx",
 			"textures/texture_compression_bc3.ktx",
+#if BX_PLATFORM_WIIU
+			"textures/texture_compression_bc4.ktx",
+			"textures/texture_compression_bc5.ktx",
+#endif // BX_PLATFORM_WIIU
 			"textures/texture_compression_bc7.ktx",
 			"textures/texture_compression_etc1.ktx",
 			"textures/texture_compression_etc2.ktx",
