@@ -330,7 +330,20 @@ namespace
 			m_nonSmartHalfApplyProgram           = loadProgram("cs_assao_non_smart_half_apply", NULL);
 			m_generateImportanceMapProgram       = loadProgram("cs_assao_generate_importance_map", NULL);
 			m_postprocessImportanceMapAProgram   = loadProgram("cs_assao_postprocess_importance_map_a", NULL);
+#if BX_PLATFORM_WIIU
+			if (bgfx::RendererType::Gx2 == bgfx::getRendererType())
+			{
+				// Adaptive accumulation needs global atomicAdd, unavailable on native R700.
+				m_postprocessImportanceMapBProgram = BGFX_INVALID_HANDLE;
+				m_settings.m_qualityLevel = 2;
+			}
+			else
+			{
+				m_postprocessImportanceMapBProgram = loadProgram("cs_assao_postprocess_importance_map_b", NULL);
+			}
+#else
 			m_postprocessImportanceMapBProgram   = loadProgram("cs_assao_postprocess_importance_map_b", NULL);
+#endif // BX_PLATFORM_WIIU
 			m_loadCounterClearProgram            = loadProgram("cs_assao_load_counter_clear", NULL);
 
 			 // Load some meshes
@@ -419,7 +432,14 @@ namespace
 			bgfx::destroy(m_nonSmartHalfApplyProgram);
 			bgfx::destroy(m_generateImportanceMapProgram);
 			bgfx::destroy(m_postprocessImportanceMapAProgram);
+#if BX_PLATFORM_WIIU
+			if (bgfx::isValid(m_postprocessImportanceMapBProgram))
+			{
+				bgfx::destroy(m_postprocessImportanceMapBProgram);
+			}
+#else
 			bgfx::destroy(m_postprocessImportanceMapBProgram);
+#endif // BX_PLATFORM_WIIU
 			bgfx::destroy(m_loadCounterClearProgram);
 			bgfx::destroy(m_combineProgram);
 
@@ -792,10 +812,23 @@ namespace
 				ImGui::Separator();
 
 				int32_t quality = m_settings.m_qualityLevel + 1;
+#if BX_PLATFORM_WIIU
+				const char* qualityLevels[] = { "Lowest (Half Resolution)", "Low", "Medium", "High", "Adaptive" };
+				const bool adaptive = bgfx::isValid(m_postprocessImportanceMapBProgram);
+
+				if (ImGui::Combo("Quality Level", &quality, qualityLevels, adaptive ? 5 : 4))
+				{
+					m_settings.m_qualityLevel = quality - 1;
+				}
+				if (!adaptive)
+				{
+					ImGui::TextWrapped("Adaptive quality requires global atomics, unavailable on GX2.");
+#else
 
 				if (ImGui::Combo("Quality Level", &quality, "Lowest (Half Resolution)\0Low\0Medium\0High\0Adaptive\0\0"))
 				{
 					m_settings.m_qualityLevel = quality - 1;
+#endif // BX_PLATFORM_WIIU
 				}
 
 				ImGui::Checkbox("Generate Normals", &m_settings.m_generateNormals);

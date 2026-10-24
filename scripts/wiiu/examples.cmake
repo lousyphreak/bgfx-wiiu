@@ -123,8 +123,7 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
     if(example STREQUAL "39-assao")
         # Package the 23 supported original stages. Adaptive quality still needs
         # a global atomicAdd in this stage, which native R700 cannot compile.
-        # The unchanged application loads it unconditionally and defaults to
-        # adaptive quality; this package does not establish a startup pass.
+        # The example selects its original nonadaptive quality levels on GX2.
         list(FILTER shader_sources EXCLUDE REGEX "cs_assao_postprocess_importance_map_b\\.sc$")
     endif()
     if(example STREQUAL "21-deferred")
