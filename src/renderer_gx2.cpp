@@ -276,6 +276,7 @@ namespace bgfx { namespace gx2
 				}
 				if (format == TextureFormat::R8 || format == TextureFormat::RG8 || format == TextureFormat::RGBA8
 				|| format == TextureFormat::R16F || format == TextureFormat::R32F || format == TextureFormat::RGBA16F
+				|| format == TextureFormat::RG16F || format == TextureFormat::RG32F
 				|| format == TextureFormat::RGBA32F || format == TextureFormat::R32U || format == TextureFormat::RGBA32U)
 					g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_IMAGE_READ | BGFX_CAPS_FORMAT_TEXTURE_IMAGE_WRITE;
 				if (format == TextureFormat::RGBA8 || format == TextureFormat::BGRA8 || (format >= TextureFormat::BC1 && format <= TextureFormat::BC3))
@@ -3129,6 +3130,8 @@ namespace bgfx { namespace gx2
 			case 5: return GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
 			case 8: return GX2_SURFACE_FORMAT_UINT_R32_G32_B32_A32;
 			case 9: return GX2_SURFACE_FORMAT_UINT_R32;
+			case 10: return GX2_SURFACE_FORMAT_FLOAT_R16_G16;
+			case 11: return GX2_SURFACE_FORMAT_FLOAT_R32_G32;
 			default: return GX2_SURFACE_FORMAT_FLOAT_R32_G32_B32_A32; // Quantized float4 intermediates: R16F/RG8/R8.
 			}
 		}
@@ -3207,6 +3210,7 @@ namespace bgfx { namespace gx2
 				input.viewFirstSlice = _bind.m_firstLayer+_layer; input.viewNumSlices = 1;
 				const bool volume = input.surface.dim == GX2_SURFACE_DIM_TEXTURE_3D;
 				const bool array = input.surface.dim != GX2_SURFACE_DIM_TEXTURE_2D && !volume;
+				if (volume) { input.viewFirstSlice = 0; input.viewNumSlices = input.surface.depth; }
 				if (input.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE)
 				{
 					input = cubeArrayView(_texture); input.viewFirstMip = _bind.m_firstMip;
@@ -3240,6 +3244,11 @@ namespace bgfx { namespace gx2
 			const uint32_t faces = view.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && _bind.m_type == Binding::Texture ? 6 : 1;
 			view.viewFirstSlice = uint32_t(_bind.m_firstLayer)*faces;
 			view.viewNumSlices = bx::min<uint32_t>(uint32_t(_bind.m_numLayers)*faces, view.surface.depth-view.viewFirstSlice);
+			if (view.surface.dim == GX2_SURFACE_DIM_TEXTURE_3D && _bind.m_type == Binding::Image)
+			{
+				view.viewFirstSlice = 0;
+				view.viewNumSlices = view.surface.depth;
+			}
 			if (_bind.m_type == Binding::Image) view.surface.format = textureFormat(TextureFormat::Enum(_bind.m_format), false, view.compMap);
 			const uint32_t flags = _bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? uint32_t(texture.flags) : _bind.m_samplerFlags;
 			if (_bind.m_type == Binding::Texture && (texture.flags & BGFX_TEXTURE_SRGB_MUTABLE)) view.surface.format = textureFormat(texture.format, 0 != (flags & BGFX_SAMPLER_SRGB), view.compMap);
@@ -3438,6 +3447,7 @@ namespace bgfx { namespace gx2
 				entry[4] = bx::toLittleEndian(bx::max(1u, surface.width >> bind.m_firstMip));
 				entry[5] = bx::toLittleEndian(bx::max(1u, surface.height >> bind.m_firstMip));
 				entry[6] = bx::toLittleEndian(bx::min<uint32_t>(bind.m_numLayers, layers-bind.m_firstLayer));
+				if (surface.dim == GX2_SURFACE_DIM_TEXTURE_3D) entry[7] = bx::toLittleEndian(uint32_t(bind.m_firstLayer));
 			}
 			for (const ComputeOutput& output : outputs)
 			{
