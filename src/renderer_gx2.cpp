@@ -140,6 +140,28 @@ namespace bgfx { namespace gx2
 			| (_state & BGFX_STATE_WRITE_B ? 4 : 0) | (_state & BGFX_STATE_WRITE_A ? 8 : 0);
 	}
 
+	static bool supportsMipAutogen(TextureFormat::Enum _format)
+	{
+		switch (_format)
+		{
+		case TextureFormat::R8:
+		case TextureFormat::R8S:
+		case TextureFormat::R16:
+		case TextureFormat::R16S:
+		case TextureFormat::R16F:
+		case TextureFormat::R32F:
+		case TextureFormat::RG8:
+		case TextureFormat::RG8S:
+		case TextureFormat::RG16:
+		case TextureFormat::RG16S:
+		case TextureFormat::RG16F:
+		case TextureFormat::RG32F:
+			return true;
+		default:
+			return MipGen::isSupported(_format);
+		}
+	}
+
 	static GX2SurfaceFormat textureFormat(TextureFormat::Enum _format, bool _srgb, uint32_t& _compMap)
 	{
 		_compMap = GX2_COMP_MAP(0, 1, 2, 3);
@@ -250,7 +272,7 @@ namespace bgfx { namespace gx2
 					const uint32_t type = uint32_t(textureFormat(format, false, comp)) & 0x300;
 					if (type != 0x100 && type != 0x300)
 						g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_MSAA | BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X2 | BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X4 | BGFX_CAPS_FORMAT_TEXTURE_FRAMEBUFFER_MSAA_X8;
-					if (MipGen::isSupported(format)) g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_MIP_AUTOGEN;
+					if (supportsMipAutogen(format)) g_caps.formats[ff] |= BGFX_CAPS_FORMAT_TEXTURE_MIP_AUTOGEN;
 				}
 				if (format == TextureFormat::R8 || format == TextureFormat::RG8 || format == TextureFormat::RGBA8
 				|| format == TextureFormat::R16F || format == TextureFormat::R32F || format == TextureFormat::RGBA16F
@@ -1884,7 +1906,7 @@ namespace bgfx { namespace gx2
 
 		void generateMips(Texture& _texture, const RenderView& _view)
 		{
-			if (!_view.autoMips || !MipGen::isSupported(_texture.format) || _texture.texture.surface.mipLevels <= _view.mip+1) return;
+			if (!_view.autoMips || !supportsMipAutogen(_texture.format) || _texture.texture.surface.mipLevels <= _view.mip+1) return;
 			const GX2Surface& surface = _texture.texture.surface;
 			const bool volume = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D;
 			const bool array = surface.dim != GX2_SURFACE_DIM_TEXTURE_2D && !volume;
@@ -1900,8 +1922,8 @@ namespace bgfx { namespace gx2
 				for (uint32_t slice = first; slice < first+count; ++slice)
 				{
 					GX2Texture source = cube ? _texture.arrayView : _texture.texture; source.viewFirstMip = mip-1; source.viewNumMips = 1;
-					source.compMap = GX2_COMP_MAP(0, 1, 2, 3); // Filter storage channels, including BGRA.
-					uint32_t comp; source.surface.format = textureFormat(_texture.format, _view.srgb, comp);
+					source.surface.format = textureFormat(_texture.format, _view.srgb, source.compMap);
+					if (_texture.format == TextureFormat::BGRA8) source.compMap = GX2_COMP_MAP(0, 1, 2, 3); // Filter storage channels.
 					if (!volume) { source.surface.dim = array ? GX2_SURFACE_DIM_TEXTURE_2D_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D; source.viewFirstSlice = slice; source.viewNumSlices = 1; }
 					GX2InitTextureRegs(&source);
 					GX2ColorBuffer dest = {}; dest.surface = surface; dest.surface.format = source.surface.format; dest.viewMip = mip; dest.viewFirstSlice = slice; dest.viewNumSlices = 1; GX2InitColorBufferRegs(&dest);
@@ -1925,7 +1947,7 @@ namespace bgfx { namespace gx2
 		{
 			if (_texture.renderImage || _texture.hiZ || _texture.renderSurface.aa != GX2_AA_MODE1X) return true;
 			for (const RenderView& view : _texture.rendered)
-				if (view.autoMips && MipGen::isSupported(_texture.format) && _texture.texture.surface.mipLevels > view.mip+1) return true;
+				if (view.autoMips && supportsMipAutogen(_texture.format) && _texture.texture.surface.mipLevels > view.mip+1) return true;
 			return false;
 		}
 
@@ -3405,6 +3427,18 @@ namespace bgfx { namespace gx2
 			}
 			Block* layout = allocate(512, 256);
 			bx::memSet(layout->data, 0, 512);
+			// imageSize also needs dimensions for readonly and size-only bindings.
+			for (const ComputeResource& resource : shader.resources)
+			{
+				if (resource.kind != 1) continue;
+				const Binding& bind = _bind.m_bind[resource.binding];
+				const GX2Surface& surface = m_textures[bind.m_idx].texture.surface;
+				const uint32_t layers = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D ? bx::max(1u, surface.depth >> bind.m_firstMip) : surface.depth;
+				uint32_t* entry = (uint32_t*)layout->data+resource.binding*8;
+				entry[4] = bx::toLittleEndian(bx::max(1u, surface.width >> bind.m_firstMip));
+				entry[5] = bx::toLittleEndian(bx::max(1u, surface.height >> bind.m_firstMip));
+				entry[6] = bx::toLittleEndian(bx::min<uint32_t>(bind.m_numLayers, layers-bind.m_firstLayer));
+			}
 			for (const ComputeOutput& output : outputs)
 			{
 				uint32_t* entry = (uint32_t*)layout->data+output.binding*8;
@@ -3414,7 +3448,6 @@ namespace bgfx { namespace gx2
 					const uint32_t element = output.elementBytes;
 					entry[2] = bx::toLittleEndian(output.surface.pitch*element/4);
 					entry[3] = bx::toLittleEndian(output.surface.imageSize/4);
-					entry[4] = bx::toLittleEndian(output.surface.width); entry[5] = bx::toLittleEndian(output.surface.height); entry[6] = bx::toLittleEndian(output.layers);
 				}
 			}
 			GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), layout->data, 512);
