@@ -320,8 +320,18 @@ namespace bgfx
 		bx::ErrorAssert err;
 		if (diagnostics[0] != '\0') bx::write(_messages, &err, "%s\n", diagnostics);
 		if (mode == GLSL_SHADER_MODE_ERROR) return false;
+		std::unique_ptr<GX2VertexShader, decltype(&FreeVertexShader)> primitiveVs(NULL, FreeVertexShader);
+		if (vertex)
+		{
+			GX2VertexShader* alternate = NULL;
+			const GLSL_COMPILER_FLAG variantFlags = GLSL_COMPILER_FLAG(flags | GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
+			const GX2ShaderMode variantMode = CompileVertexShader(_code.c_str(), GLSL_COMPILE_BLOCK, &alternate, diagnostics, sizeof(diagnostics), variantFlags);
+			primitiveVs.reset(alternate);
+			if (diagnostics[0] != '\0') bx::write(_messages, &err, "%s\n", diagnostics);
+			if (variantMode == GLSL_SHADER_MODE_ERROR) return false;
+		}
 		GFDFile file;
-		if (vertex) file.vertexShaders.push_back(vertex);
+		if (vertex) { file.vertexShaders.push_back(vertex); file.vertexShaders.push_back(primitiveVs.get()); }
 		if (pixel) file.pixelShaders.push_back(pixel);
 		const std::vector<uint8_t> bytes = SerializeGFD(file);
 		return vertex ? writeStage(_options, *vertex, declarations, bytes, _writer, _messages)

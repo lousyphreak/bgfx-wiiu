@@ -266,7 +266,7 @@ namespace bgfx { namespace gx2
 				GX2SetupContextStateEx(m_headlessContext, TRUE);
 				m_context = m_headlessContext;
 			}
-			g_caps.supported = BGFX_CAPS_COMPUTE | BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
+			g_caps.supported = BGFX_CAPS_COMPUTE | BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY | BGFX_CAPS_PRIMITIVE_ID;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -979,6 +979,15 @@ namespace bgfx { namespace gx2
 			shader.uniformSize = block ? block->size : 0;
 			if (shader.uniformSize > 65536) unsupported("uniform blocks larger than 64 KiB");
 			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, shader.program->data, programSize);
+			if (!shader.fragment && !shader.compute && GFDGetVertexShaderCount(gfd) > 1)
+			{
+				const uint32_t size = GFDGetVertexShaderProgramSize(1, gfd);
+				shader.primitiveHeader = allocate(GFDGetVertexShaderHeaderSize(1, gfd));
+				shader.primitiveProgram = allocate(size, GX2_SHADER_PROGRAM_ALIGNMENT);
+				loaded = GFDGetVertexShader((GX2VertexShader*)shader.primitiveHeader->data, shader.primitiveProgram->data, 1, gfd);
+				BGFX_FATAL(loaded, Fatal::InvalidShader, "GX2 primitive-ID GFD loader: %s", GFDGetLastErrorString());
+				GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, shader.primitiveProgram->data, size);
+			}
 			bx::free(g_allocator, gfd, 4);
 		}
 
@@ -986,6 +995,7 @@ namespace bgfx { namespace gx2
 		{
 			Shader& shader = m_shaders[_handle.idx];
 			retire(shader.program); retire(shader.header);
+			retire(shader.primitiveProgram); retire(shader.primitiveHeader);
 			shader.uniforms.clear(); shader.predefined.clear(); shader.resources.clear(); shader.uniformSize = 0; shader.rawSrvMask = 0;
 			shader.compute = shader.fragment = false;
 			bx::memSet(shader.samplerDimensions, 0, sizeof(shader.samplerDimensions));
@@ -1003,6 +1013,11 @@ namespace bgfx { namespace gx2
 				return;
 			}
 			program.vertex = &m_shaders[_vsh.idx]; program.fragment = &m_shaders[_fsh.idx];
+			const GX2PixelShader* fragment = (const GX2PixelShader*)program.fragment->header->data;
+			for (uint32_t ii = 0; ii < fragment->regs.num_spi_ps_input_cntl; ++ii)
+				if ((fragment->regs.spi_ps_input_cntls[ii] & 0xff) == 0xc9) program.primitiveId = true; // CafeGLSL PrimitiveID semantic.
+			BGFX_FATAL(!program.primitiveId || program.vertex->primitiveHeader, Fatal::InvalidShader,
+				"GX2 PrimitiveID requires a vertex shader rebuilt with both native variants.");
 			program.m_numPredefined = 0;
 			for (Shader* shader : { program.vertex, program.fragment })
 				for (const PredefinedUniform& predefined : shader->predefined)
@@ -1012,8 +1027,10 @@ namespace bgfx { namespace gx2
 		void destroyProgram(ProgramHandle _handle) override
 		{
 			Program& program = m_programs[_handle.idx];
+			if (m_boundProgram == &program) m_boundProgram = NULL;
 			for (Fetch& fetch : program.fetches) retire(fetch.program);
 			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL; program.compute = NULL;
+			program.primitiveId = false;
 		}
 
 		void textureStorage(Texture& _texture, Block* _block)
@@ -2490,9 +2507,20 @@ namespace bgfx { namespace gx2
 			if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
 			if (m_boundProgram != &_program)
 			{
-				GX2SetVertexShader((const GX2VertexShader*)_program.vertex->header->data);
+				Block* header = _program.primitiveId ? _program.vertex->primitiveHeader : _program.vertex->header;
+				Block* code = _program.primitiveId ? _program.vertex->primitiveProgram : _program.vertex->program;
+				GX2SetVertexShader((const GX2VertexShader*)header->data);
+				if (!m_boundProgram || m_boundProgram->primitiveId != _program.primitiveId)
+				{
+					const uint32_t mode = _program.primitiveId ? 1 : 0;
+					alignas(64) const uint32_t registers[] = {
+						UINT32_C(0xc0016900), 0x290, mode, // VGT_GS_MODE: scenario A or off.
+						UINT32_C(0xc0016900), 0x2ad, mode, // VGT_REUSE_OFF: per-primitive vertex results.
+					};
+					GX2CopyDisplayList(registers, sizeof(registers));
+				}
 				GX2SetPixelShader((const GX2PixelShader*)_program.fragment->header->data);
-				touch(_program.vertex->program); touch(_program.vertex->header);
+				touch(code); touch(header);
 				touch(_program.fragment->program); touch(_program.fragment->header);
 				m_boundProgram = &_program;
 			}

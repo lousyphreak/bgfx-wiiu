@@ -109,6 +109,8 @@ namespace bgfx { namespace gx2
 	{
 		Block* header = NULL;
 		Block* program = NULL;
+		Block* primitiveHeader = NULL;
+		Block* primitiveProgram = NULL;
 		std::vector<Uniform> uniforms;
 		std::vector<PredefinedUniform> predefined;
 		uint32_t uniformSize = 0;
@@ -134,6 +136,7 @@ namespace bgfx { namespace gx2
 		Shader* vertex = NULL;
 		Shader* fragment = NULL;
 		Shader* compute = NULL;
+		bool primitiveId = false;
 		std::vector<Fetch> fetches;
 		PredefinedUniform m_predefined[PredefinedUniform::Count*2];
 		uint16_t m_numPredefined = 0;
