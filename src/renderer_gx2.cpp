@@ -3458,14 +3458,19 @@ namespace bgfx { namespace gx2
 			}
 			Block* layout = allocate(512, 256);
 			bx::memSet(layout->data, 0, 512);
-			// imageSize also needs dimensions for readonly and size-only bindings.
+			// Queries need metadata for readonly and size-only bindings too.
 			for (const ComputeResource& resource : shader.resources)
 			{
-				if (resource.kind != 1) continue;
 				const Binding& bind = _bind.m_bind[resource.binding];
+				uint32_t* entry = (uint32_t*)layout->data+resource.binding*8;
+				if (resource.kind == 0)
+				{
+					const Buffer& buffer = bind.m_type == Binding::IndexBuffer ? m_indexBuffers[bind.m_idx] : m_vertexBuffers[bind.m_idx];
+					entry[1] = bx::toLittleEndian(bx::min(bind.m_size, buffer.size-bind.m_offset)/4);
+					continue;
+				}
 				const GX2Surface& surface = m_textures[bind.m_idx].texture.surface;
 				const uint32_t layers = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D ? bx::max(1u, surface.depth >> bind.m_firstMip) : surface.depth;
-				uint32_t* entry = (uint32_t*)layout->data+resource.binding*8;
 				entry[4] = bx::toLittleEndian(bx::max(1u, surface.width >> bind.m_firstMip));
 				entry[5] = bx::toLittleEndian(bx::max(1u, surface.height >> bind.m_firstMip));
 				entry[6] = bx::toLittleEndian(bx::min<uint32_t>(bind.m_numLayers, layers-bind.m_firstLayer));
@@ -3474,10 +3479,11 @@ namespace bgfx { namespace gx2
 			for (const ComputeOutput& output : outputs)
 			{
 				uint32_t* entry = (uint32_t*)layout->data+output.binding*8;
-				entry[0] = bx::toLittleEndian(output.offset/4); entry[1] = bx::toLittleEndian(output.size/4);
+				entry[0] = bx::toLittleEndian(output.offset/4);
 				if (output.surface.width)
 				{
 					const uint32_t element = output.elementBytes;
+					entry[1] = bx::toLittleEndian(output.size/4);
 					entry[2] = bx::toLittleEndian(output.surface.pitch*element/4);
 					entry[3] = bx::toLittleEndian(output.surface.imageSize/4);
 				}
