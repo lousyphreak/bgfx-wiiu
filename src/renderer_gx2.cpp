@@ -1167,11 +1167,18 @@ namespace bgfx { namespace gx2
 					{
 						for (const Rect& rect : stage.dirty)
 						{
-						const uint32_t offset = (rect.m_y/info.blockHeight*level.source.pitch+rect.m_x/info.blockWidth)*blockSize;
-						const uint32_t rows = (rect.m_height+info.blockHeight-1)/info.blockHeight;
-						const uint32_t bytes = ((rows-1)*level.source.pitch+(rect.m_width+info.blockWidth-1)/info.blockWidth)*blockSize;
-						DCStoreRangeNoSync((uint8_t*)stage.block->data+offset, bytes);
-						published = true;
+							const uint32_t offset = (rect.m_y/info.blockHeight*level.source.pitch+rect.m_x/info.blockWidth)*blockSize;
+							const uint32_t rows = (rect.m_height+info.blockHeight-1)/info.blockHeight;
+							const uint32_t rowBytes = (rect.m_width+info.blockWidth-1)/info.blockWidth*blockSize;
+							const uint32_t pitch = level.source.pitch*blockSize;
+							uint8_t* data = (uint8_t*)stage.block->data+offset;
+							// Sub-cache-line gaps cannot contain a cache line worth skipping.
+							if (pitch-rowBytes < BX_CACHE_LINE_SIZE)
+								DCStoreRangeNoSync(data, (rows-1)*pitch+rowBytes);
+							else
+								for (uint32_t row = 0; row < rows; ++row)
+									DCStoreRangeNoSync(data+row*pitch, rowBytes);
+							published = true;
 						}
 					}
 			}
