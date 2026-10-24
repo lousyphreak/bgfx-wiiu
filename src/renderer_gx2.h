@@ -11,6 +11,7 @@
 #include <coreinit/memorymap.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
+#include <gx2/debug.h>
 #include <gx2/displaylist.h>
 #include <gx2/draw.h>
 #include <gx2/event.h>

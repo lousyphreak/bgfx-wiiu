@@ -1587,7 +1587,10 @@ namespace bgfx { namespace gx2
 			stats.gpuTimeEnd = result.end;
 			stats.gpuFrameNum = result.frameNum;
 		}
-		void setMarker(const char*, uint16_t) override {}
+		void setMarker(const char* _marker, uint16_t _len) override
+		{
+			GX2DebugTagUserString(GX2_DEBUG_TAG_TYPE_BOOKMARK, "%.*s", int(_len), _marker);
+		}
 		void setName(Handle, const char*, uint16_t) override {}
 
 		GX2ColorBuffer colorBuffer(Texture& _texture, const RenderView& _view, bool _srgb = false)
