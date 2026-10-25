@@ -1953,7 +1953,8 @@ namespace bgfx { namespace gx2
 			const uint32_t type = uint32_t(_source.surface.format) & 0x300;
 			const bool point = _depth != NULL || type == 0x100 || type == 0x300;
 			GX2Sampler sampler; GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_CLAMP, point ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR);
-			GX2InitSamplerZMFilter(&sampler, point ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR, GX2_TEX_MIP_FILTER_MODE_NONE); GX2InitSamplerLOD(&sampler, 0, 0, 0);
+			// NO_MIP bypasses the selected source mip on native GX2.
+			GX2InitSamplerZMFilter(&sampler, point ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR, GX2_TEX_MIP_FILTER_MODE_POINT); GX2InitSamplerLOD(&sampler, 0, 0, 0);
 			GX2SetPixelSampler(&sampler, 0); GX2SetPixelTexture(&_source, 0);
 			if (_stencil) { GX2SetPixelSampler(&sampler, 1); GX2SetPixelTexture(_stencil, 1); }
 			if (_params) updateUniform(m_uniformReg.find("u_mipGen")->m_handle.idx, _params, 16);
@@ -3183,14 +3184,14 @@ namespace bgfx { namespace gx2
 						flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
 						flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? m_anisotropy : GX2_TEX_ANISO_RATIO_NONE);
 					GX2InitSamplerZMFilter(&sampler, flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR,
-						view.viewNumMips <= 1 ? GX2_TEX_MIP_FILTER_MODE_NONE : flags & BGFX_SAMPLER_MIP_POINT ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
+						view.viewNumMips <= 1 || (flags & BGFX_SAMPLER_MIP_POINT) ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
 					const float maxLod = float(view.viewNumMips-1);
 					GX2InitSamplerLOD(&sampler, bx::min(maxLod, float(bind.m_lod.min)*0.25f),
 						bind.m_lod.max == UINT8_MAX ? maxLod : bx::min(maxLod, float(bind.m_lod.max)*0.25f), 0);
 					if ((flags & BGFX_SAMPLER_SAMPLE_STENCIL) || (uint32_t(view.surface.format) & 0x300) == 0x100 || (uint32_t(view.surface.format) & 0x300) == 0x300)
 					{
 						GX2InitSamplerXYFilter(&sampler, GX2_TEX_XY_FILTER_MODE_POINT, GX2_TEX_XY_FILTER_MODE_POINT, GX2_TEX_ANISO_RATIO_NONE);
-						GX2InitSamplerZMFilter(&sampler, GX2_TEX_Z_FILTER_MODE_POINT, view.viewNumMips > 1 ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_NONE);
+						GX2InitSamplerZMFilter(&sampler, GX2_TEX_Z_FILTER_MODE_POINT, GX2_TEX_MIP_FILTER_MODE_POINT);
 					}
 					GX2InitSamplerDepthCompare(&sampler, s_compare[(flags & BGFX_SAMPLER_COMPARE_MASK) >> BGFX_SAMPLER_COMPARE_SHIFT]);
 					GX2InitSamplerBorderType(&sampler, borderType);
