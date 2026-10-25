@@ -1310,9 +1310,11 @@ namespace bgfx { namespace gx2
 					}
 				}
 				invalidateTexture(texture, GX2_INVALIDATE_MODE_COLOR_BUFFER);
-				invalidateTexture(texture, GX2_INVALIDATE_MODE_TEXTURE);
 				if (texture.image) touch(texture.image); texture.pending = false; texture.arrayDirty = true;
 			}
+			// Every copy producer is published above. Ordinary sampling starts only
+			// after this group; invalidate its input cache once for the whole group.
+			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, NULL, UINT32_MAX);
 			m_pendingTextures.clear();
 		}
 
