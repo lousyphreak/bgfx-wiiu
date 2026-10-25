@@ -19,11 +19,14 @@ namespace entry
 {
 	static bool queryTarget(void* _userData, bgfx::Gx2Target* _target);
 	static void present(void* _userData);
+	static void presentColor(void* _userData, const GX2ColorBuffer* _color);
+	static void setReleaseCallback(void* _userData, void (*_release)(void*), void* _renderer);
 
 	struct Window
 	{
 		SDL_Window* window = NULL;
-		bgfx::Gx2PlatformData platform = { this, queryTarget, present };
+		bgfx::Gx2PlatformData platform = { this, queryTarget, present, presentColor, setReleaseCallback };
+		SDL_WiiUExternalGraphics graphics = {};
 		Sint64 generation = -1;
 		int32_t mouseX = 0;
 		int32_t mouseY = 0;
@@ -45,6 +48,7 @@ namespace entry
 		*_target = {};
 		if (NULL == win.window) return false;
 		SDL_PropertiesID props = SDL_GetWindowProperties(win.window);
+		_target->frameBufferHeap = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_MEM1_HEAP_POINTER, NULL);
 		Uint32 outputs = Uint32(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_WIIU_PRESENT_OUTPUT_MASK_NUMBER, 0));
 		if (outputs & SDL_WIIU_PRESENT_OUTPUT_TV)
 		{
@@ -62,6 +66,20 @@ namespace entry
 	static void present(void* _userData)
 	{
 		SDL_WIIU_SwapWindow(static_cast<Window*>(_userData)->window);
+	}
+
+	static void presentColor(void* _userData, const GX2ColorBuffer* _color)
+	{
+		Window& win = *static_cast<Window*>(_userData);
+		win.graphics.color = _color;
+		SDL_WIIU_SwapWindow(win.window);
+		win.graphics.color = NULL;
+	}
+
+	static void setReleaseCallback(void* _userData, void (*_release)(void*), void* _renderer)
+	{
+		Window& win = *static_cast<Window*>(_userData);
+		win.graphics.release = _release; win.graphics.userdata = _renderer;
 	}
 
 	static WindowHandle findWindow(SDL_WindowID _id)
@@ -382,6 +400,7 @@ namespace entry
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
 		Window& win = s_windows[idx];
+		SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIIU_EXTERNAL_GRAPHICS_POINTER, &win.graphics);
 		win.window = SDL_CreateWindowWithProperties(props);
 		SDL_DestroyProperties(props);
 		if (NULL == win.window) return { UINT16_MAX };

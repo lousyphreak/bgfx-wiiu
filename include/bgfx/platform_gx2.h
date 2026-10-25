@@ -6,6 +6,7 @@
 #define BGFX_PLATFORM_GX2_H_HEADER_GUARD
 
 #include <stdint.h>
+#include <stddef.h>
 
 struct GX2ColorBuffer;
 struct GX2DepthBuffer;
@@ -49,6 +50,9 @@ namespace bgfx
 	{
 		GX2ColorBuffer* color;
 		GX2ContextState* context;
+		// Optional foreground MEM1 expansion heap. The adapter must register the
+		// release callback below before allowing allocations from it.
+		void* frameBufferHeap = NULL;
 	};
 
 	/// Pass one descriptor per native window as SwapChain::nwh, including the
@@ -58,14 +62,20 @@ namespace bgfx
 	/// query reads current availability, not a cached foreground generation.
 	/// Before withdrawing targets, the host drains preceding GPU work; SDL does
 	/// this on foreground release. bgfx shutdown then frees storage without GX2 calls.
-	/// present must submit preceding bgfx work before returning. SDL_WIIU_SwapWindow
-	/// provides that submission before its adapter-owned scan copy/swap sequence.
+	/// present must submit preceding bgfx work before returning. presentColor must
+	/// also submit its scan copy before returning, because its source is bgfx-owned.
+	/// SDL_WIIU_SwapWindow provides these submissions and retains swap coordination.
 	/// When using separate TV/DRC windows, touch/render both each frame so SDL can
 	/// complete its shared swap. A mirrored SDL window needs one callback.
 	/// Process SDL lifecycle events before bgfx::frame; only issue GPU resource
 	/// commands while foreground-ready. Shut bgfx down before SDL.
 	/// The RGBA8 adapter owns presentation dimensions/format and scan buffers.
 	/// bgfx supplies requested 2x/4x/8x MSAA with a retained color target when needed.
+	/// An external-color adapter returns a layout-only target and presents the bgfx
+	/// color directly. Its release callback must run after a GPU drain and before
+	/// the MEM1 heap is destroyed, including window/output reconfiguration. Window
+	/// depth/Hi-Z, color and auxiliary storage prefer MEM1, with MEM2 fallback when
+	/// the requested surfaces exceed its available capacity. Depth has priority.
 	/// For headless rendering, leave Init::swapChain.nwh null and width/height zero.
 	/// bgfx owns an aligned GX2 context state, but GX2 must already be initialized
 	/// by SDL/the host. Only explicit offscreen framebuffers are drawable; frames
@@ -75,6 +85,13 @@ namespace bgfx
 		void* userData;
 		bool (*query)(void* userData, Gx2Target* target);
 		void (*present)(void* userData);
+		// Optional direct scanout from a bgfx-owned color buffer. With this hook,
+		// query may return a layout-only color descriptor (surface.image == NULL).
+		// The host retains scan-buffer ownership and resolves MSAA during its copy.
+		void (*presentColor)(void* userData, const GX2ColorBuffer* color) = NULL;
+		// Called after the host's foreground GPU drain, before its heap is freed.
+		// Register NULL to detach. Callbacks must not issue GX2 commands.
+		void (*setReleaseCallback)(void* userData, void (*release)(void*), void* renderer) = NULL;
 	};
 }
 #endif

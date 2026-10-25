@@ -8,6 +8,7 @@
 #include <bgfx/platform_gx2.h>
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
+#include <coreinit/memexpheap.h>
 #include <coreinit/memorymap.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
@@ -36,6 +37,7 @@ namespace bgfx { namespace gx2
 	{
 		void* data;
 		uint32_t size;
+		MEMHeapHandle heap = NULL; // NULL is persistent MEM2/default-heap storage.
 		OSTime stamp = 0;
 	};
 
