@@ -2868,6 +2868,9 @@ namespace bgfx { namespace gx2
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
 				m_stageData[stage] = (uint8_t*)m_upload->data + m_uploadUsed;
+				// A fresh snapshot has no CPU contents to preserve. dcbz allocates its
+				// cache blocks without fetching the previous GPU-only bytes from MEM2.
+				if (shader.uniformSize) DCZeroRange(m_stageData[stage], shader.uniformSize);
 				m_uploadUsed += bx::alignUp(shader.uniformSize, 256);
 				const GX2VertexShader* vertex = (const GX2VertexShader*)shader.header->data;
 				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
@@ -2897,12 +2900,12 @@ namespace bgfx { namespace gx2
 
 		void uniformsEnd(Program& _program)
 		{
-			// Snapshots are complete here. Do not walk the 256-byte alignment holes or
-			// evict CPU cache lines; endBatch supplies one publication barrier for all.
+			// Snapshots are complete here. Skip the 256-byte alignment holes and release
+			// these GPU-only cache lines; endBatch orders all publications together.
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				const uint32_t size = (stage ? _program.fragment : _program.vertex)->uniformSize;
-				if (size) DCStoreRangeNoSync(m_stageData[stage], size);
+				if (size) DCFlushRangeNoSync(m_stageData[stage], size);
 			}
 			if (_program.vertex->uniformSize) GX2SetVertexUniformBlock(0, _program.vertex->uniformSize, m_stageData[0]);
 			if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
