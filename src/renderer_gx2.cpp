@@ -4296,6 +4296,7 @@ namespace bgfx { namespace gx2
 			if (_render->m_vboffset) update(m_vertexBuffers[_render->m_transientVb->handle.idx], 0, _render->m_vboffset, _render->m_transientVb->data, true, true);
 			_render->sort();
 			uint32_t exportBytes = 0;
+			bool hasGraphicsImages = false;
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 			{
 				SortKey key;
@@ -4309,6 +4310,11 @@ namespace bgfx { namespace gx2
 				else
 				{
 					const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
+					if (draw.m_streamMask)
+					{
+						const Program& program = m_programs[key.m_program.idx];
+						hasGraphicsImages |= !program.vertex->resources.empty() || !program.fragment->resources.empty();
+					}
 					if (!isValid(draw.m_indirectBuffer)) continue;
 					const bool indexed = isValid(draw.m_indexBuffer);
 					const uint32_t num = indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect);
@@ -4316,13 +4322,18 @@ namespace bgfx { namespace gx2
 				}
 			}
 			GraphicsImages images;
-			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
+			// Most frames have no graphics image bindings. Their sorted draw data
+			// does not need a second traversal to build an empty export layout.
+			if (hasGraphicsImages)
 			{
-				SortKey key;
-				if (!key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
+				for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 				{
-					const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
-					if (draw.m_streamMask) exportBytes = graphicsImageLayout(images, m_programs[key.m_program.idx], _render->m_renderBind[draw.m_bindIdx], exportBytes);
+					SortKey key;
+					if (!key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
+					{
+						const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
+						if (draw.m_streamMask) exportBytes = graphicsImageLayout(images, m_programs[key.m_program.idx], _render->m_renderBind[draw.m_bindIdx], exportBytes);
+					}
 				}
 			}
 			Block* exports = exportBytes ? gpuBufferAllocate(exportBytes) : NULL;
