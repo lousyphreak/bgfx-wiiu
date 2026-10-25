@@ -2794,7 +2794,8 @@ namespace bgfx { namespace gx2
 				DCFlushRange(m_upload->data, m_uploadUsed);
 				GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, NULL, UINT32_MAX);
 			}
-			GX2CallDisplayList(m_list->data, bytes);
+			// Empty batches contain no command stream for the native indirect-buffer packet.
+			if (bytes) GX2CallDisplayList(m_list->data, bytes);
 		}
 
 		void uniformsBegin(Program& _program)
