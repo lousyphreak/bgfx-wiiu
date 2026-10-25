@@ -1906,6 +1906,17 @@ namespace bgfx { namespace gx2
 			return block;
 		}
 
+		void primitiveRestart(GX2PrimitiveMode _primitive, uint32_t _indexSize)
+		{
+			const bool strip = _primitive == GX2_PRIMITIVE_MODE_TRIANGLE_STRIP || _primitive == GX2_PRIMITIVE_MODE_LINE_STRIP;
+			const uint32_t size = strip ? _indexSize : 0;
+			if (size == m_restartSize) return;
+			alignas(64) const uint32_t registers[] = {0xc0016900, 0x2a5, size ? 1u : 0u};
+			GX2CopyDisplayList(registers, sizeof(registers));
+			if (size) GX2SetPrimitiveRestartIndex(size == 4 ? UINT32_MAX : UINT16_MAX);
+			m_restartSize = size;
+		}
+
 		void rasterSamples(bool _multisample, bool _sampleFrequency = false)
 		{
 			// Keep GX2's scheduler baseline; change only MSAA_ENABLE and PS_ITER_SAMPLE.
@@ -2752,6 +2763,7 @@ namespace bgfx { namespace gx2
 			m_depthControl = {};
 			GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
 			m_rasterMode = UINT32_MAX; rasterSamples(true);
+			m_restartSize = UINT32_MAX; primitiveRestart(GX2_PRIMITIVE_MODE_TRIANGLES, 0);
 			m_cachedState = UINT64_MAX;
 			m_cachedStencil = UINT64_MAX;
 			m_cachedRgba = UINT32_MAX;
@@ -3471,6 +3483,7 @@ namespace bgfx { namespace gx2
 					GX2SetAlphaToMask(FALSE, GX2_ALPHA_TO_MASK_MODE_NON_DITHERED);
 					GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
 			m_rasterMode = UINT32_MAX; rasterSamples(true);
+			m_restartSize = UINT32_MAX; primitiveRestart(GX2_PRIMITIVE_MODE_TRIANGLES, 0);
 					const float depth[4] = {clear.m_depth, 0, 0, 0}; updateUniform(depthUniform->m_handle.idx, depth, 16);
 					for (uint32_t ii = 0; ii < m_numColors; ++ii)
 						if (integerMask & (1u << ii))
@@ -3500,6 +3513,7 @@ namespace bgfx { namespace gx2
 					channelMasks(15, floatMask);
 					GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
 			m_rasterMode = UINT32_MAX; rasterSamples(true);
+			m_restartSize = UINT32_MAX; primitiveRestart(GX2_PRIMITIVE_MODE_TRIANGLES, 0);
 					GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, 0, 1);
 				}
 				viewport(_view); m_cachedState = UINT64_MAX;
@@ -4089,6 +4103,7 @@ namespace bgfx { namespace gx2
 				m_depthWritten |= m_hasDepth && ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && stencilWrite));
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
+				primitiveRestart(primitive, indexed ? (m_indexBuffers[draw.m_indexBuffer.idx].flags & BGFX_BUFFER_INDEX32 ? 4 : 2) : 0);
 				vertexInput(program, draw);
 				uint32_t count = 0;
 				Block* occlusion = hasOcclusionQuery ? beginOcclusion(draw.m_occlusionQuery) : NULL;
@@ -4238,6 +4253,7 @@ namespace bgfx { namespace gx2
 		TextVideoMem m_statsText;
 		bool m_wireframe = false;
 		DepthControl m_depthControl = {};
+		uint32_t m_restartSize = UINT32_MAX;
 		uint32_t m_rasterMode = UINT32_MAX;
 		uint32_t m_sampleMask = UINT32_MAX;
 		uint64_t m_cachedState, m_cachedStencil;
