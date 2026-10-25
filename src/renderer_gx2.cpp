@@ -402,10 +402,15 @@ namespace bgfx { namespace gx2
 			bool present = m_mainWindow.used;
 			for (FrameBuffer& fb : m_frameBuffers) present |= fb.window.used;
 			if (!present) return;
-			uint32_t swaps, flips;
-			OSTime lastFlip, lastVsync;
-			GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
-			if (swaps - flips >= 2) GX2WaitForFlip();
+			// Interval zero uses immediate single buffering. Waiting for a flip can
+			// still sleep until vsync; GPU storage reuse is paced by its timestamps.
+			if (0 != GX2GetSwapInterval())
+			{
+				uint32_t swaps, flips;
+				OSTime lastFlip, lastVsync;
+				GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
+				if (swaps - flips >= 2) GX2WaitForFlip();
+			}
 			presentWindow(m_mainWindow);
 			for (FrameBuffer& fb : m_frameBuffers) presentWindow(fb.window);
 			// Each adapter submits preceding rendering before its borrowed scan copy.
@@ -3976,7 +3981,10 @@ namespace bgfx { namespace gx2
 			m_currentFrameBuffer = BGFX_INVALID_HANDLE;
 			if (frameBufferAvailable(initial))
 			{
-				GX2SetSwapInterval((_render->m_reset & BGFX_RESET_VSYNC) ? 1 : 0);
+				const uint32_t interval = (_render->m_reset & BGFX_RESET_VSYNC) ? 1 : 0;
+				// The native setter drains outstanding swaps even when unchanged.
+				// Querying also catches SDL restoring interval one on foreground acquire.
+				if (GX2GetSwapInterval() != interval) GX2SetSwapInterval(interval);
 				bindFrameBuffer(initial);
 			}
 			if (_render->m_iboffset) update(m_indexBuffers[_render->m_transientIb->handle.idx], 0, _render->m_iboffset, _render->m_transientIb->data, false, true);
