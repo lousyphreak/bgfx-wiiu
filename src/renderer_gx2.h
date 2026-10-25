@@ -166,6 +166,7 @@ namespace bgfx { namespace gx2
 	struct Texture
 	{
 		GX2Texture texture = {};
+		const Gx2ExternalTexture* external = NULL;
 		GX2Texture arrayView = {};
 		Block* arrayImage = NULL;
 		std::vector<Block*> spareArrayImages;
