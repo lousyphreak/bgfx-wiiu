@@ -116,6 +116,7 @@ namespace bgfx { namespace gx2
 		uint32_t uniformSize = 0;
 		uint32_t rawSrvMask = 0;
 		bool fragment = false;
+		bool sampleFrequency = false;
 		bool compute = false;
 		std::vector<ComputeResource> resources;
 		uint8_t samplerDimensions[16] = {}; // TextureDimension + 1; zero is unused.
