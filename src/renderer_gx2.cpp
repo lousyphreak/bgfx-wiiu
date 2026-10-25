@@ -46,7 +46,9 @@ namespace bgfx { namespace gx2
 		for (uint32_t ii = 0; ii < _count; ++ii)
 		{
 			uint32_t bits;
-			bx::memCopy(&bits, src+ii*4, 4);
+			// Keep the fixed-size bit copy visible to the compiler: lwbrx/stw,
+			// rather than an out-of-line bx::memCopy call for each float.
+			__builtin_memcpy(&bits, src+ii*4, 4);
 			dst[ii] = bx::toLittleEndian(bits);
 		}
 	}
