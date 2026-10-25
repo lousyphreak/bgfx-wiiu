@@ -460,7 +460,11 @@ namespace bgfx
 					{
 						Matrix4 modelView;
 						const Matrix4& model = frameCache.m_matrixCache.at(_draw.m_startMatrix);
+#if BX_PLATFORM_WIIU
+						bx::float4x4_mul(&modelView.un.f4x4
+#else
 						bx::model4x4_mul(&modelView.un.f4x4
+#endif // BX_PLATFORM_WIIU
 							, &model.un.f4x4
 							, &_renderView.m_view.un.f4x4
 							);
@@ -477,7 +481,11 @@ namespace bgfx
 						Matrix4 modelView;
 						Matrix4 invModelView;
 						const Matrix4& model = frameCache.m_matrixCache.at(_draw.m_startMatrix);
+#if BX_PLATFORM_WIIU
+						bx::float4x4_mul(&modelView.un.f4x4
+#else
 						bx::model4x4_mul(&modelView.un.f4x4
+#endif // BX_PLATFORM_WIIU
 							, &model.un.f4x4
 							, &_renderView.m_view.un.f4x4
 							);
@@ -496,7 +504,12 @@ namespace bgfx
 					{
 						Matrix4 modelViewProj;
 						const Matrix4& model = frameCache.m_matrixCache.at(_draw.m_startMatrix);
+#if BX_PLATFORM_WIIU
+						// setTransform also accepts projective matrices (e.g. planar shadows).
+						bx::float4x4_mul(&modelViewProj.un.f4x4
+#else
 						bx::model4x4_mul_viewproj4x4(&modelViewProj.un.f4x4
+#endif // BX_PLATFORM_WIIU
 							, &model.un.f4x4
 							, &m_viewProj.un.f4x4
 							);
