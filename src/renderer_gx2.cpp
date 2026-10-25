@@ -14,6 +14,8 @@
 namespace bgfx { namespace gx2
 {
 	static const OSTime kPending = INT64_MAX;
+	// Four outstanding swaps trigger native hang detection, even at interval zero.
+	static constexpr uint32_t kQueuedFrames = BGFX_CONFIG_MAX_FRAME_LATENCY < 3 ? BGFX_CONFIG_MAX_FRAME_LATENCY : 3;
 	static constexpr uint32_t kTextureSamplers = BGFX_CONFIG_MAX_TEXTURE_SAMPLERS < 16 ? BGFX_CONFIG_MAX_TEXTURE_SAMPLERS : 16;
 	static constexpr uint32_t kColorTargets = BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS < 8 ? BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS : 8;
 
@@ -421,11 +423,12 @@ namespace bgfx { namespace gx2
 			}
 		}
 
-		void seal()
+		OSTime seal()
 		{
 			const OSTime stamp = GX2GetLastSubmittedTimeStamp();
 			for (Block* block : m_touched) block->stamp = stamp;
 			m_touched.clear();
+			return stamp;
 		}
 
 		void endFrame(bool _willPresent) override
@@ -449,8 +452,8 @@ namespace bgfx { namespace gx2
 			bool present = m_mainWindow.used;
 			for (FrameBuffer& fb : m_frameBuffers) present |= fb.window.used;
 			if (!present) return;
-			// Interval zero uses immediate single buffering. Waiting for a flip can
-			// still sleep until vsync; GPU storage reuse is paced by its timestamps.
+			// Interval zero must wait for GPU progress, never a vertical sync.
+			// Bound pending swaps independently of how little command storage a frame uses.
 			if (0 != GX2GetSwapInterval())
 			{
 				uint32_t swaps, flips;
@@ -458,11 +461,18 @@ namespace bgfx { namespace gx2
 				GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
 				if (swaps - flips >= 2) GX2WaitForFlip();
 			}
+			else
+			{
+				const OSTime stamp = m_presentStamps[m_presentCursor];
+				if (stamp > GX2GetRetiredTimeStamp())
+					while (!GX2WaitTimeStamp(stamp)) {}
+			}
 			presentWindow(m_mainWindow);
 			for (FrameBuffer& fb : m_frameBuffers) presentWindow(fb.window);
 			// The adapter submits its scan copy too: an external color source is a
 			// bgfx Block, so retirement must include the presentation consumer.
-			seal();
+			m_presentStamps[m_presentCursor] = seal();
+			m_presentCursor = (m_presentCursor+1)%kQueuedFrames;
 		}
 
 		Block* acquire(std::vector<Block*>& _pool, uint32_t _size, bool _displayList = false)
@@ -4609,6 +4619,8 @@ namespace bgfx { namespace gx2
 		TextureFormat::Enum m_captureFormat = TextureFormat::Unknown;
 
 		Window m_mainWindow;
+		OSTime m_presentStamps[kQueuedFrames] = {};
+		uint32_t m_presentCursor = 0;
 		uint32_t m_gpuTimeout;
 		GX2ContextState* m_headlessContext = NULL;
 		GX2ContextState* m_context = NULL;
