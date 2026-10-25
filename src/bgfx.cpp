@@ -532,6 +532,8 @@ namespace bgfx
 		BGFX_EMBEDDED_SHADER(fs_gx2_copy_int_3d),
 		BGFX_EMBEDDED_SHADER(fs_gx2_clear_uint),
 		BGFX_EMBEDDED_SHADER(fs_gx2_clear_int),
+		BGFX_EMBEDDED_SHADER(fs_gx2_resolve_color_2d),
+		BGFX_EMBEDDED_SHADER(fs_gx2_resolve_color_array),
 #endif
 
 #if BGFX_CONFIG_MIP_GEN_FALLBACK
@@ -1059,6 +1061,8 @@ namespace bgfx
 				"fs_gx2_copy_int_3d",
 				"fs_gx2_clear_uint",
 				"fs_gx2_clear_int",
+				"fs_gx2_resolve_color_2d",
+				"fs_gx2_resolve_color_array",
 			};
 			for (uint32_t ii = 0; ii < BX_COUNTOF(fragments); ++ii)
 			{

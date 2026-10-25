@@ -1424,7 +1424,7 @@ namespace bgfx { namespace gx2
 					GX2ColorBuffer target = colorBuffer(texture, view);
 					GX2ClearColor(&target, 0, 0, 0, 0);
 					for (uint32_t slice = first; slice < first+count; ++slice) level.slices[slice].renderDirty = false;
-					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, view);
+					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY) || texture.auxiliary) markRendered(texture, view);
 				}
 				else
 				{
@@ -1850,7 +1850,7 @@ namespace bgfx { namespace gx2
 					const bool written = depth ? m_depthWritten : 0 != (m_colorWritten & (1u << colorIndex++));
 					if (!written) continue;
 					invalidateTexture(texture, depth ? GX2_INVALIDATE_MODE_DEPTH_BUFFER : GX2_INVALIDATE_MODE_COLOR_BUFFER, true);
-					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, {attachment.mip, attachment.layer, attachment.numLayers, 0 != (attachment.flags & BGFX_ATTACHMENT_AUTO_GEN_MIPS), !depth && 0 != (uint32_t(m_colors[colorIndex-1].surface.format) & 0x400)});
+					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY) || (!depth && texture.auxiliary)) markRendered(texture, {attachment.mip, attachment.layer, attachment.numLayers, 0 != (attachment.flags & BGFX_ATTACHMENT_AUTO_GEN_MIPS), !depth && 0 != (uint32_t(m_colors[colorIndex-1].surface.format) & 0x400)});
 				}
 			else
 			{
@@ -1875,7 +1875,7 @@ namespace bgfx { namespace gx2
 			return block;
 		}
 
-		void fullscreen(Program& _program, const GX2Texture& _source, GX2ColorBuffer* _color, GX2DepthBuffer* _depth, uint32_t _width, uint32_t _height, const float* _params = NULL, const GX2Texture* _stencil = NULL)
+		void fullscreen(Program& _program, const GX2Texture& _source, GX2ColorBuffer* _color, GX2DepthBuffer* _depth, uint32_t _width, uint32_t _height, const float* _params = NULL, const GX2Texture* _stencil = NULL, const Rect* _rect = NULL)
 		{
 			if (_color) GX2SetColorBuffer(_color, GX2_RENDER_TARGET_0);
 			if (_depth)
@@ -1884,7 +1884,9 @@ namespace bgfx { namespace gx2
 				if (_depth->hiZPtr) GX2SetClearDepthStencil(_depth, _depth->depthClear, _depth->stencilClear);
 			}
 			GX2SetAAMode(_color ? _color->surface.aa : _depth->surface.aa);
-			GX2SetViewport(0, 0, _width, _height, -1, 1); GX2SetScissor(0, 0, _width, _height);
+			GX2SetViewport(0, 0, _width, _height, -1, 1);
+			if (_rect) GX2SetScissor(_rect->m_x, _rect->m_y, _rect->m_width, _rect->m_height);
+			else GX2SetScissor(0, 0, _width, _height);
 			GX2SetDepthStencilControl(_depth != NULL, _depth != NULL, GX2_COMPARE_FUNC_ALWAYS, _stencil != NULL, FALSE,
 				GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE,
 				GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE);
@@ -2014,7 +2016,7 @@ namespace bgfx { namespace gx2
 				else if (_texture.renderSurface.aa != GX2_AA_MODE1X)
 				{
 					GX2ColorBuffer color = colorBuffer(_texture, view, view.srgb);
-					if (_texture.flags & BGFX_TEXTURE_MSAA_SAMPLE) GX2ExpandAAColorBuffer(&color);
+					if (_texture.texture.surface.aa != GX2_AA_MODE1X) GX2ExpandAAColorBuffer(&color);
 					else
 					{
 						GX2Surface destination = _texture.texture.surface; uint32_t comp;
@@ -2362,7 +2364,7 @@ namespace bgfx { namespace gx2
 			Texture& src = m_textures[_blit.m_src.idx];
 			Texture& dst = m_textures[_blit.m_dst.idx];
 			const uint16_t count = bx::max<uint16_t>(1, _blit.m_depth);
-			const bool resolve = src.auxiliary && src.texture.surface.aa != GX2_AA_MODE1X
+			const bool resolve = src.texture.surface.aa != GX2_AA_MODE1X
 				&& dst.texture.surface.aa == GX2_AA_MODE1X && !bimg::isDepth(bimg::TextureFormat::Enum(src.format));
 			// Native resolve consumes compressed color/aux directly. Keep pending
 			// source expansion for a later multisample sampling consumer.
@@ -2383,10 +2385,31 @@ namespace bgfx { namespace gx2
 				&& width == bx::max(1u, destination.width >> _blit.m_dstMip) && height == bx::max(1u, destination.height >> _blit.m_dstMip);
 			if (resolve)
 			{
-				if (!full) { unsupported("partial sampled-MSAA color resolve"); return; }
-				GX2ColorBuffer color = colorBuffer(src, {_blit.m_srcMip, _blit.m_srcZ, count});
-				color.surface.format = source.format; GX2InitColorBufferRegs(&color);
-				GX2ResolveAAColorBuffer(&color, &destination, _blit.m_dstMip, _blit.m_dstZ);
+				if (full && src.auxiliary)
+				{
+					GX2ColorBuffer color = colorBuffer(src, {_blit.m_srcMip, _blit.m_srcZ, count});
+					color.surface.format = source.format; GX2InitColorBufferRegs(&color);
+					GX2ResolveAAColorBuffer(&color, &destination, _blit.m_dstMip, _blit.m_dstZ);
+				}
+				else
+				{
+					resolveTexture(src);
+					restore(); beginBatch();
+					Program& program = m_programs[m_mipGen->m_program[source.dim == GX2_SURFACE_DIM_TEXTURE_2D_MSAA_ARRAY ? 15 : 14].idx];
+					const Rect rect = {int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), uint16_t(width), uint16_t(height)};
+					const float params[4] = {float(int32_t(_blit.m_srcX)-_blit.m_dstX), float(int32_t(_blit.m_srcY)-_blit.m_dstY), float(1u << source.aa), 0};
+					for (uint16_t slice = 0; slice < count; ++slice)
+					{
+						GX2Texture sampled = src.texture; sampled.surface.format = source.format;
+						sampled.compMap = GX2_COMP_MAP(0, 1, 2, 3);
+						sampled.viewFirstMip = _blit.m_srcMip; sampled.viewNumMips = 1;
+						sampled.viewFirstSlice = _blit.m_srcZ+slice; sampled.viewNumSlices = 1; GX2InitTextureRegs(&sampled);
+						GX2ColorBuffer color = {}; color.surface = destination;
+						color.viewMip = _blit.m_dstMip; color.viewFirstSlice = _blit.m_dstZ+slice; color.viewNumSlices = 1; GX2InitColorBufferRegs(&color);
+						fullscreen(program, sampled, &color, NULL, bx::max(1u, destination.width >> _blit.m_dstMip), bx::max(1u, destination.height >> _blit.m_dstMip), params, NULL, &rect);
+					}
+					endBatch();
+				}
 				if (src.image) touch(src.image);
 				if (src.auxiliary) touch(src.auxiliary);
 				transferWritten(dst, _blit.m_dstMip, _blit.m_dstZ, count);
