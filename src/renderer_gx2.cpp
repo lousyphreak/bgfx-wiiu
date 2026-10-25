@@ -1060,6 +1060,9 @@ namespace bgfx { namespace gx2
 				return;
 			}
 			program.vertex = &m_shaders[_vsh.idx]; program.fragment = &m_shaders[_fsh.idx];
+			program.samplerMask = program.vertex->rawSrvMask | program.fragment->rawSrvMask;
+			for (uint32_t unit = 0; unit < 16; ++unit)
+				if (program.vertex->samplerDimensions[unit] || program.fragment->samplerDimensions[unit]) program.samplerMask |= 1u << unit;
 			const GX2PixelShader* fragment = (const GX2PixelShader*)program.fragment->header->data;
 			for (uint32_t ii = 0; ii < fragment->regs.num_spi_ps_input_cntl; ++ii)
 				if ((fragment->regs.spi_ps_input_cntls[ii] & 0xff) == 0xc9) program.primitiveId = true; // CafeGLSL PrimitiveID semantic.
@@ -1077,7 +1080,7 @@ namespace bgfx { namespace gx2
 			if (m_boundProgram == &program) m_boundProgram = NULL;
 			for (Fetch& fetch : program.fetches) retire(fetch.program);
 			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL; program.compute = NULL;
-			program.primitiveId = false;
+			program.primitiveId = false; program.samplerMask = 0;
 		}
 
 		void textureStorage(Texture& _texture, Block* _block)
@@ -2153,8 +2156,9 @@ namespace bgfx { namespace gx2
 		bool prepareTextures(const RenderBind& _bind, const Program& _program)
 		{
 			bool restored = false;
-			for (uint32_t unit = 0; unit < 16; ++unit)
+			for (uint32_t mask = _program.samplerMask; mask; mask &= mask-1)
 			{
+				const uint32_t unit = bx::countTrailingZeros(mask);
 				const Binding& bind = _bind.m_bind[unit];
 				if (bind.m_idx == kInvalidHandle || bind.m_type != Binding::Texture) continue;
 				Texture& texture = m_textures[bind.m_idx];
@@ -3181,8 +3185,9 @@ namespace bgfx { namespace gx2
 		void textures(const RenderBind& _bind, const float _palette[][4])
 		{
 			static const GX2TexClampMode clamps[] = { GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_CLAMP_MODE_MIRROR, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_CLAMP_MODE_CLAMP_BORDER };
-			for (uint32_t ii = 0; ii < 16; ++ii)
+			for (uint32_t mask = m_boundProgram->samplerMask; mask; mask &= mask-1)
 			{
+				const uint32_t ii = bx::countTrailingZeros(mask);
 				const Binding& bind = _bind.m_bind[ii];
 				if (bind.m_idx == kInvalidHandle) continue;
 				if ((m_boundProgram->vertex->rawSrvMask | m_boundProgram->fragment->rawSrvMask) & (1u << ii))
@@ -3195,6 +3200,8 @@ namespace bgfx { namespace gx2
 				Texture& texture = m_textures[bind.m_idx];
 				const uint32_t flags = bind.m_samplerFlags & BGFX_SAMPLER_INTERNAL_DEFAULT ? uint32_t(texture.flags) : bind.m_samplerFlags;
 				const uint8_t encodedDimension = m_boundProgram->fragment->samplerDimensions[ii] ? m_boundProgram->fragment->samplerDimensions[ii] : m_boundProgram->vertex->samplerDimensions[ii];
+				const uint8_t stages = (m_boundProgram->vertex->samplerDimensions[ii] ? 1 : 0)
+					| (m_boundProgram->fragment->samplerDimensions[ii] ? 2 : 0);
 				const TextureDimension::Enum dimension = encodedDimension ? TextureDimension::Enum(encodedDimension-1) : TextureDimension::Count;
 				const bool border = (flags & BGFX_SAMPLER_U_MASK) == BGFX_SAMPLER_U_BORDER
 					|| (flags & BGFX_SAMPLER_V_MASK) == BGFX_SAMPLER_V_BORDER || (flags & BGFX_SAMPLER_W_MASK) == BGFX_SAMPLER_W_BORDER;
@@ -3211,7 +3218,7 @@ namespace bgfx { namespace gx2
 					else if (color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_BLACK;
 				}
 				else if (color[0] == 1 && color[1] == 1 && color[2] == 1 && color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_WHITE;
-				if (m_boundTextures[ii] != &texture.texture || !(m_boundBindings[ii] == bind) || m_boundDimensions[ii] != encodedDimension || borderChanged)
+				if (m_boundTextures[ii] != &texture.texture || !(m_boundBindings[ii] == bind) || m_boundDimensions[ii] != encodedDimension || borderChanged || (m_boundStages[ii] & stages) != stages)
 				{
 					GX2Texture view = texture.texture.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && dimension == TextureDimension::Dimension2DArray ? texture.arrayView : texture.texture;
 					view.viewFirstMip = bind.m_firstMip;
@@ -3227,7 +3234,8 @@ namespace bgfx { namespace gx2
 						view.compMap = GX2_COMP_MAP(1, 4, 4, 5);
 					}
 					GX2InitTextureRegs(&view);
-					GX2SetPixelTexture(&view, ii); GX2SetVertexTexture(&view, ii);
+					if (stages & 2) GX2SetPixelTexture(&view, ii);
+					if (stages & 1) GX2SetVertexTexture(&view, ii);
 					GX2Sampler sampler;
 					GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
 					GX2InitSamplerClamping(&sampler, clamps[(flags & BGFX_SAMPLER_U_MASK) >> BGFX_SAMPLER_U_SHIFT],
@@ -3247,8 +3255,9 @@ namespace bgfx { namespace gx2
 					}
 					GX2InitSamplerDepthCompare(&sampler, s_compare[(flags & BGFX_SAMPLER_COMPARE_MASK) >> BGFX_SAMPLER_COMPARE_SHIFT]);
 					GX2InitSamplerBorderType(&sampler, borderType);
-					GX2SetPixelSampler(&sampler, ii); GX2SetVertexSampler(&sampler, ii);
-					m_boundTextures[ii] = &texture.texture; m_boundBindings[ii] = bind; m_boundDimensions[ii] = encodedDimension;
+					if (stages & 2) GX2SetPixelSampler(&sampler, ii);
+					if (stages & 1) GX2SetVertexSampler(&sampler, ii);
+					m_boundTextures[ii] = &texture.texture; m_boundBindings[ii] = bind; m_boundDimensions[ii] = encodedDimension; m_boundStages[ii] = stages;
 				}
 				if (vertexBorderChanged)
 				{
@@ -4608,6 +4617,7 @@ namespace bgfx { namespace gx2
 		const GX2Texture* m_boundTextures[16];
 		Binding m_boundBindings[16];
 		uint8_t m_boundDimensions[16];
+		uint8_t m_boundStages[16];
 		float m_borderColors[2][16][4];
 		uint32_t m_borderValid[2] = {};
 		GX2TexAnisoRatio m_anisotropy = GX2_TEX_ANISO_RATIO_NONE;

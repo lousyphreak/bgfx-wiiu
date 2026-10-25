@@ -140,6 +140,7 @@ namespace bgfx { namespace gx2
 		Shader* fragment = NULL;
 		Shader* compute = NULL;
 		bool primitiveId = false;
+		uint32_t samplerMask = 0;
 		std::vector<Fetch> fetches;
 		PredefinedUniform m_predefined[PredefinedUniform::Count*2];
 		uint16_t m_numPredefined = 0;
