@@ -1024,7 +1024,7 @@ namespace bgfx
 		}
 
 #if BGFX_CONFIG_RENDERER_GX2
-		ProgramHandle m_program[18];
+		ProgramHandle m_program[20];
 #else
 		ProgramHandle m_program[4];
 #endif // BGFX_CONFIG_RENDERER_GX2

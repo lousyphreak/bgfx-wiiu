@@ -37,6 +37,7 @@ foreach(shader IN ITEMS
     fs_gx2_clear_uint fs_gx2_clear_int
     fs_gx2_resolve_color_2d fs_gx2_resolve_color_array
     fs_gx2_copy_msaa_2d fs_gx2_copy_msaa_array
+    fs_gx2_copy_depth_msaa_2d fs_gx2_copy_depth_msaa_array
     vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
     if(shader MATCHES "^cs_")
         set(stage compute)

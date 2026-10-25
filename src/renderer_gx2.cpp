@@ -1850,7 +1850,7 @@ namespace bgfx { namespace gx2
 					const bool written = depth ? m_depthWritten : 0 != (m_colorWritten & (1u << colorIndex++));
 					if (!written) continue;
 					invalidateTexture(texture, depth ? GX2_INVALIDATE_MODE_DEPTH_BUFFER : GX2_INVALIDATE_MODE_COLOR_BUFFER, true);
-					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY) || (!depth && texture.auxiliary)) markRendered(texture, {attachment.mip, attachment.layer, attachment.numLayers, 0 != (attachment.flags & BGFX_ATTACHMENT_AUTO_GEN_MIPS), !depth && 0 != (uint32_t(m_colors[colorIndex-1].surface.format) & 0x400)});
+					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY) || texture.renderSurface.aa != GX2_AA_MODE1X) markRendered(texture, {attachment.mip, attachment.layer, attachment.numLayers, 0 != (attachment.flags & BGFX_ATTACHMENT_AUTO_GEN_MIPS), !depth && 0 != (uint32_t(m_colors[colorIndex-1].surface.format) & 0x400)});
 				}
 			else
 			{
@@ -1859,7 +1859,7 @@ namespace bgfx { namespace gx2
 				{
 					Texture& texture = m_textures[window->swapChain.depth.idx];
 					invalidateTexture(texture, GX2_INVALIDATE_MODE_DEPTH_BUFFER, true);
-					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY)) markRendered(texture, {0, 0, 1});
+					if (!(texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY) || texture.renderSurface.aa != GX2_AA_MODE1X) markRendered(texture, {0, 0, 1});
 				}
 			}
 			m_colorWritten = 0; m_depthWritten = false;
@@ -1914,9 +1914,25 @@ namespace bgfx { namespace gx2
 		{
 			GX2DepthBuffer depth = depthBuffer(_texture, _view);
 			if (depth.hiZPtr) GX2SetClearDepthStencil(&depth, depth.depthClear, depth.stencilClear);
-			if (depth.surface.aa == GX2_AA_MODE1X || (_texture.flags & BGFX_TEXTURE_MSAA_SAMPLE))
+			if (depth.surface.aa == GX2_AA_MODE1X || _texture.texture.surface.aa != GX2_AA_MODE1X)
 			{
 				if (_texture.renderImage) GX2ConvertDepthBufferToTextureSurface(&depth, &_texture.texture.surface, _view.mip, _view.layer);
+				else if (depth.surface.aa != GX2_AA_MODE1X)
+				{
+					// Write-only depth retains native depth tiling. Blits sample a
+					// converted mirror, refreshed only after another depth write.
+					if (!_texture.depthSamplesImage)
+					{
+						_texture.depthSamples = depth.surface;
+						_texture.depthSamples.use = GX2_SURFACE_USE_TEXTURE;
+						_texture.depthSamples.swizzle = 0; _texture.depthSamples.tileMode = GX2_TILE_MODE_DEFAULT;
+						_texture.depthSamplesImage = surfaceStorage(_texture.depthSamples);
+					}
+					GX2ConvertDepthBufferToTextureSurface(&depth, &_texture.depthSamples, _view.mip, _view.layer);
+					GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _texture.depthSamplesImage->data, _texture.depthSamplesImage->size);
+					GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _texture.depthSamplesImage->data, _texture.depthSamplesImage->size);
+					touch(_texture.depthSamplesImage);
+				}
 				else if (_texture.hiZ) GX2ExpandDepthBuffer(&depth);
 				return;
 			}
@@ -2037,7 +2053,8 @@ namespace bgfx { namespace gx2
 				_texture.arrayDirty = true;
 				invalidateTexture(_texture, GX2_INVALIDATE_MODE_COLOR_BUFFER);
 			}
-			invalidateTexture(_texture, GX2_INVALIDATE_MODE_TEXTURE);
+			if (!(_texture.flags & BGFX_TEXTURE_RT_WRITE_ONLY) || !_texture.depthSamplesImage)
+				invalidateTexture(_texture, GX2_INVALIDATE_MODE_TEXTURE);
 			for (const RenderView& view : _texture.rendered) generateMips(_texture, view);
 			_texture.rendered.clear();
 			if (_texture.image) touch(_texture.image);
@@ -2446,10 +2463,112 @@ namespace bgfx { namespace gx2
 			if (snapshotImage) { touch(snapshotImage); touch(snapshotAuxiliary); retire(snapshotImage); retire(snapshotAuxiliary); }
 		}
 
+		void transferDepthSamples(const BlitItem& _blit)
+		{
+			Texture& src = m_textures[_blit.m_src.idx];
+			Texture& dst = m_textures[_blit.m_dst.idx];
+			if (dst.texture.surface.aa != GX2_AA_MODE1X && src.texture.surface.aa != dst.texture.surface.aa)
+			{ unsupported("depth sample copy requires matching AA modes or a single-sample destination"); return; }
+			if (src.format == TextureFormat::D24F)
+			{ unsupported("sampled D24F encoding"); return; }
+			resolveTexture(src);
+			GX2Texture source = src.texture;
+			if (!src.renderImage && src.depthSamplesImage) source.surface = src.depthSamples;
+			source.compMap = GX2_COMP_MAP(0, 1, 2, 3);
+			source.viewFirstMip = _blit.m_srcMip; source.viewNumMips = 1;
+			source.viewFirstSlice = _blit.m_srcZ; source.viewNumSlices = 1;
+			const uint16_t count = bx::max<uint16_t>(1, _blit.m_depth);
+			const uint32_t width = bx::min<uint32_t>(_blit.m_width,
+				bx::max(1u, source.surface.width >> _blit.m_srcMip)-_blit.m_srcX,
+				bx::max(1u, dst.texture.surface.width >> _blit.m_dstMip)-_blit.m_dstX);
+			const uint32_t height = bx::min<uint32_t>(_blit.m_height,
+				bx::max(1u, source.surface.height >> _blit.m_srcMip)-_blit.m_srcY,
+				bx::max(1u, dst.texture.surface.height >> _blit.m_dstMip)-_blit.m_dstY);
+			const bool stencil = src.format == TextureFormat::D24S8 || src.format == TextureFormat::D32FS8;
+			auto copy = [&](GX2Texture input, GX2DepthBuffer output, const Rect& rect, int32_t offsetX, int32_t offsetY)
+			{
+				Program& program = m_programs[m_mipGen->m_program[input.surface.dim == GX2_SURFACE_DIM_TEXTURE_2D_MSAA_ARRAY ? 19 : 18].idx];
+				const float params[4] = {float(offsetX), float(offsetY), 0, stencil ? 1.0f : 0.0f};
+				restore(); beginBatch();
+				for (uint16_t slice = 0; slice < count; ++slice)
+				{
+					GX2InitTextureRegs(&input);
+					GX2Texture stencilInput = input;
+					stencilInput.surface.format = src.format == TextureFormat::D32FS8 ? GX2_SURFACE_FORMAT_UINT_G8_X24 : GX2_SURFACE_FORMAT_UINT_X24_G8;
+					stencilInput.compMap = GX2_COMP_MAP(1, 4, 4, 5); GX2InitTextureRegs(&stencilInput);
+					output.viewNumSlices = 1; GX2InitDepthBufferRegs(&output);
+					GX2InitDepthBufferHiZEnable(&output, output.hiZPtr != NULL);
+					fullscreen(program, input, NULL, &output,
+						bx::max(1u, output.surface.width >> output.viewMip), bx::max(1u, output.surface.height >> output.viewMip),
+						params, stencil ? &stencilInput : NULL, &rect, output.surface.aa != GX2_AA_MODE1X);
+					++input.viewFirstSlice; ++output.viewFirstSlice;
+				}
+				endBatch();
+			};
+			GX2DepthBuffer destination = depthBuffer(dst, {_blit.m_dstMip, _blit.m_dstZ, count});
+			const uint64_t sourceBegin = OSEffectiveToPhysical(uint32_t(uintptr_t(source.surface.image)));
+			const uint64_t destinationBegin = OSEffectiveToPhysical(uint32_t(uintptr_t(destination.surface.image)));
+			const bool aliased = sourceBegin < destinationBegin+destination.surface.imageSize
+				&& destinationBegin < sourceBegin+source.surface.imageSize;
+			const bool toTexture = destination.surface.aa != dst.texture.surface.aa
+				|| !(destination.surface.use & GX2_SURFACE_USE_DEPTH_BUFFER);
+			Block* temporaryDepth = NULL; Block* temporaryImage = NULL;
+			GX2Surface converted = {};
+			if (toTexture || aliased)
+			{
+				// Convert through a cropped depth target. Capture every layer before
+				// writing the destination, including overlapping borrowed aliases.
+				GX2DepthBuffer temporary = {};
+				temporary.surface = source.surface;
+				temporary.surface.width = width; temporary.surface.height = height; temporary.surface.depth = count;
+				temporary.surface.mipLevels = 1; temporary.surface.aa = toTexture ? dst.texture.surface.aa : source.surface.aa;
+				temporary.surface.dim = temporary.surface.aa == GX2_AA_MODE1X ? (count > 1 ? GX2_SURFACE_DIM_TEXTURE_2D_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D)
+					: (count > 1 ? GX2_SURFACE_DIM_TEXTURE_2D_MSAA_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D_MSAA);
+				temporary.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
+				temporary.surface.swizzle = 0; temporary.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+				temporaryDepth = surfaceStorage(temporary.surface); temporary.viewNumSlices = count;
+				copy(source, temporary, {0, 0, uint16_t(width), uint16_t(height)}, _blit.m_srcX, _blit.m_srcY);
+				GX2Invalidate(GX2_INVALIDATE_MODE_DEPTH_BUFFER, temporaryDepth->data, temporaryDepth->size);
+				converted = temporary.surface; converted.use = GX2_SURFACE_USE_TEXTURE;
+				temporaryImage = surfaceStorage(converted);
+				GX2InitDepthBufferRegs(&temporary); GX2InitDepthBufferHiZEnable(&temporary, FALSE);
+				GX2ConvertDepthBufferToTextureSurface(&temporary, &converted, 0, 0);
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, temporaryImage->data, temporaryImage->size);
+				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, temporaryImage->data, temporaryImage->size);
+				if (toTexture)
+				{
+					GX2Surface output = transferDestination(dst, _blit.m_dstMip, _blit.m_dstZ, count,
+						{int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), uint16_t(width), uint16_t(height)});
+					for (uint16_t slice = 0; slice < count; ++slice)
+						transferCopy(converted, 0, slice, 0, 0, output, _blit.m_dstMip, _blit.m_dstZ+slice, _blit.m_dstX, _blit.m_dstY, width, height, dst.format);
+					transferWritten(dst, _blit.m_dstMip, _blit.m_dstZ, count);
+				}
+				else { source.surface = converted; source.viewFirstMip = 0; source.viewFirstSlice = 0; }
+			}
+			if (!toTexture)
+			{
+				restoreRenderTexture(dst, {_blit.m_dstMip, _blit.m_dstZ, count});
+				copy(source, destination, {int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), uint16_t(width), uint16_t(height)},
+					int32_t(aliased ? 0 : _blit.m_srcX)-_blit.m_dstX, int32_t(aliased ? 0 : _blit.m_srcY)-_blit.m_dstY);
+				markRendered(dst, {_blit.m_dstMip, _blit.m_dstZ, count});
+				invalidateTexture(dst, GX2_INVALIDATE_MODE_DEPTH_BUFFER, true);
+			}
+			if (src.image) touch(src.image);
+			if (src.renderImage) touch(src.renderImage);
+			if (src.depthSamplesImage) touch(src.depthSamplesImage);
+			if (src.hiZ) touch(src.hiZ);
+			if (dst.image) touch(dst.image);
+			if (dst.renderImage) touch(dst.renderImage);
+			if (dst.hiZ) touch(dst.hiZ);
+			if (temporaryDepth) { touch(temporaryDepth); touch(temporaryImage); retire(temporaryDepth); retire(temporaryImage); }
+		}
+
 		void transferTextureBlit(const BlitItem& _blit)
 		{
 			Texture& src = m_textures[_blit.m_src.idx];
 			Texture& dst = m_textures[_blit.m_dst.idx];
+			if (src.texture.surface.aa != GX2_AA_MODE1X && bimg::isDepth(bimg::TextureFormat::Enum(src.format)))
+			{ transferDepthSamples(_blit); return; }
 			if (src.texture.surface.aa != GX2_AA_MODE1X && dst.texture.surface.aa != GX2_AA_MODE1X
 			&& !bimg::isDepth(bimg::TextureFormat::Enum(src.format)))
 			{ transferColorSamples(_blit); return; }
