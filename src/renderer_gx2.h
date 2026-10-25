@@ -169,12 +169,17 @@ namespace bgfx { namespace gx2
 	struct Texture
 	{
 		GX2Texture texture = {};
+		// Ordinary draws read this prefix; conversion, staging and alias data follow.
+		uint64_t flags = 0;
+		Block* image = NULL;
+		TextureFormat::Enum format = TextureFormat::Unknown;
+		TextureFormat::Enum requestedFormat = TextureFormat::Unknown;
+		std::vector<RenderView> rendered;
 		const Gx2ExternalTexture* external = NULL;
 		GX2Texture arrayView = {};
 		Block* arrayImage = NULL;
 		std::vector<Block*> spareArrayImages;
 		bool arrayDirty = true;
-		Block* image = NULL;
 		GX2Surface renderSurface = {};
 		GX2Surface depthSamples = {}, resolvedDepth = {};
 		Block* depthSamplesImage = NULL;
@@ -182,12 +187,8 @@ namespace bgfx { namespace gx2
 		Block* renderImage = NULL;
 		Block* auxiliary = NULL;
 		Block* hiZ = NULL;
-		std::vector<RenderView> rendered;
 		std::vector<Block*> spareImages;
 		std::vector<TextureLevel> levels;
-		uint64_t flags = 0;
-		TextureFormat::Enum format = TextureFormat::Unknown;
-		TextureFormat::Enum requestedFormat = TextureFormat::Unknown;
 		uint32_t mipOffset = 0;
 		bool pending = false;
 		float depthClear = 1.0f;

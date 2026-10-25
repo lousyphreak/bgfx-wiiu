@@ -3275,7 +3275,7 @@ namespace bgfx { namespace gx2
 					bx::memCopy(m_borderColors[1][ii], color, 16); m_borderValid[1] |= 1u << ii;
 				}
 				if (texture.image) touch(texture.image);
-				if (texture.arrayImage && dimension == TextureDimension::Dimension2DArray) touch(texture.arrayImage);
+				if (dimension == TextureDimension::Dimension2DArray && texture.arrayImage) touch(texture.arrayImage);
 			}
 		}
 
