@@ -14,6 +14,8 @@
 namespace bgfx { namespace gx2
 {
 	static const OSTime kPending = INT64_MAX;
+	static constexpr uint32_t kTextureSamplers = BGFX_CONFIG_MAX_TEXTURE_SAMPLERS < 16 ? BGFX_CONFIG_MAX_TEXTURE_SAMPLERS : 16;
+	static constexpr uint32_t kColorTargets = BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS < 8 ? BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS : 8;
 
 	static void unsupported(const char* _operation)
 	{
@@ -299,10 +301,10 @@ namespace bgfx { namespace gx2
 			g_caps.formats[TextureFormat::RGBA8] |= BGFX_CAPS_FORMAT_TEXTURE_BACKBUFFER;
 			g_caps.limits.maxTextureSize = 8192;
 			g_caps.limits.maxTextureLayers = 1365; // Cube views encode face ranges in 13 bits.
-			g_caps.limits.maxFBAttachments = 8;
+			g_caps.limits.maxFBAttachments = kColorTargets;
 			g_caps.limits.maxVertexStreams = BGFX_CONFIG_MAX_VERTEX_STREAMS;
 			g_caps.limits.maxVertexAttributes = 32;
-			g_caps.limits.maxTextureSamplers = 16;
+			g_caps.limits.maxTextureSamplers = kTextureSamplers;
 			g_caps.limits.maxComputeBindings = 16;
 			g_caps.limits.maxBlits = BGFX_CONFIG_MAX_BLIT_ITEMS;
 			g_caps.limits.blitRowPitchAlign = 1024;
@@ -1054,24 +1056,22 @@ namespace bgfx { namespace gx2
 			if (!isValid(_fsh))
 			{
 				program.compute = &m_shaders[_vsh.idx];
-				program.m_numPredefined = 0;
-				for (const PredefinedUniform& predefined : program.compute->predefined)
-					program.m_predefined[program.m_numPredefined++] = predefined;
+				program.m_predefined = program.compute->predefined;
+				program.m_numPredefined = uint16_t(program.m_predefined.size());
 				return;
 			}
 			program.vertex = &m_shaders[_vsh.idx]; program.fragment = &m_shaders[_fsh.idx];
-			program.samplerMask = program.vertex->rawSrvMask | program.fragment->rawSrvMask;
-			for (uint32_t unit = 0; unit < 16; ++unit)
+			program.samplerMask = (program.vertex->rawSrvMask | program.fragment->rawSrvMask) & ((1u << kTextureSamplers)-1);
+			for (uint32_t unit = 0; unit < kTextureSamplers; ++unit)
 				if (program.vertex->samplerDimensions[unit] || program.fragment->samplerDimensions[unit]) program.samplerMask |= 1u << unit;
 			const GX2PixelShader* fragment = (const GX2PixelShader*)program.fragment->header->data;
 			for (uint32_t ii = 0; ii < fragment->regs.num_spi_ps_input_cntl; ++ii)
 				if ((fragment->regs.spi_ps_input_cntls[ii] & 0xff) == 0xc9) program.primitiveId = true; // CafeGLSL PrimitiveID semantic.
 			BGFX_FATAL(!program.primitiveId || program.vertex->primitiveHeader, Fatal::InvalidShader,
 				"GX2 PrimitiveID requires a vertex shader rebuilt with both native variants.");
-			program.m_numPredefined = 0;
-			for (Shader* shader : { program.vertex, program.fragment })
-				for (const PredefinedUniform& predefined : shader->predefined)
-					program.m_predefined[program.m_numPredefined++] = predefined;
+			program.m_predefined = program.vertex->predefined;
+			program.m_predefined.insert(program.m_predefined.end(), program.fragment->predefined.begin(), program.fragment->predefined.end());
+			program.m_numPredefined = uint16_t(program.m_predefined.size());
 		}
 
 		void destroyProgram(ProgramHandle _handle) override
@@ -1081,6 +1081,7 @@ namespace bgfx { namespace gx2
 			for (Fetch& fetch : program.fetches) retire(fetch.program);
 			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL; program.compute = NULL;
 			program.primitiveId = false; program.samplerMask = 0;
+			program.m_predefined.clear(); program.m_numPredefined = 0;
 		}
 
 		void textureStorage(Texture& _texture, Block* _block)
@@ -2827,7 +2828,8 @@ namespace bgfx { namespace gx2
 		void beginBatch()
 		{
 			m_list = acquire(m_lists, 256*1024, true);
-			m_upload = acquire(m_uploads, 256*1024);
+			// Two native 64 KiB uniform blocks are the largest single snapshot.
+			m_upload = acquire(m_uploads, 2*64*1024);
 			touch(m_list); touch(m_upload);
 			m_uploadUsed = 0;
 			m_batchDraws = 0;
@@ -3554,7 +3556,7 @@ namespace bgfx { namespace gx2
 		{
 			const Clear& clear = _view.m_clear;
 			if (0 == (clear.m_flags & BGFX_CLEAR_MASK)) return;
-			float colors[8][4] = {};
+			float colors[kColorTargets][4] = {};
 			uint32_t colorMask = 0, integerMask = 0;
 			if (clear.m_flags & BGFX_CLEAR_COLOR)
 				for (uint32_t ii = 0; ii < m_numColors; ++ii)
@@ -3824,7 +3826,7 @@ namespace bgfx { namespace gx2
 			if (_images.images.empty()) return false;
 			bool restored = false;
 			// Sampled aliases consume canonical texture storage.
-			for (uint32_t unit = 0; unit < 16; ++unit)
+			for (uint32_t unit = 0; unit < kTextureSamplers; ++unit)
 				if (_bind.m_bind[unit].m_idx != kInvalidHandle && _bind.m_bind[unit].m_type == Binding::Texture
 				&& (_program.vertex->samplerDimensions[unit] || _program.fragment->samplerDimensions[unit]))
 					restored |= graphicsImagesConsume(_images, _exports, _bind.m_bind[unit].m_idx);
@@ -4114,7 +4116,7 @@ namespace bgfx { namespace gx2
 			std::vector<ComputeOutput> outputs;
 			computeLayout(shader, _bind, outputs);
 			// Canonical inputs must be materialized before entering compute mode.
-			for (uint32_t unit = 0; unit < 16; ++unit)
+			for (uint32_t unit = 0; unit < kTextureSamplers; ++unit)
 			{
 				const Binding& bind = _bind.m_bind[unit];
 				if (bind.m_idx == kInvalidHandle) continue;
@@ -4148,7 +4150,7 @@ namespace bgfx { namespace gx2
 			GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
 			GX2SetComputeShader((const GX2ComputeShader*)shader.header->data);
 			m_boundProgram = &_program;
-			for (uint32_t unit = 0; unit < 16; ++unit)
+			for (uint32_t unit = 0; unit < kTextureSamplers; ++unit)
 			{
 				const Binding& bind = _bind.m_bind[unit];
 				if (bind.m_idx == kInvalidHandle) continue;
@@ -4587,7 +4589,7 @@ namespace bgfx { namespace gx2
 		Texture m_textures[BGFX_CONFIG_MAX_TEXTURES];
 		FrameBuffer m_frameBuffers[BGFX_CONFIG_MAX_FRAME_BUFFERS];
 		FrameBufferHandle m_currentFrameBuffer = BGFX_INVALID_HANDLE;
-		GX2ColorBuffer m_colors[8] = {};
+		GX2ColorBuffer m_colors[kColorTargets] = {};
 		GX2DepthBuffer m_activeDepth = {};
 		uint32_t m_targetWidth = 0, m_targetHeight = 0;
 		uint32_t m_numColors = 0, m_colorWritten = 0;
@@ -4614,11 +4616,11 @@ namespace bgfx { namespace gx2
 		Block* m_defaultVertex = NULL;
 		const void* m_boundAttributes[BGFX_CONFIG_MAX_VERTEX_STREAMS];
 		uint32_t m_boundStrides[BGFX_CONFIG_MAX_VERTEX_STREAMS];
-		const GX2Texture* m_boundTextures[16];
-		Binding m_boundBindings[16];
-		uint8_t m_boundDimensions[16];
-		uint8_t m_boundStages[16];
-		float m_borderColors[2][16][4];
+		const GX2Texture* m_boundTextures[kTextureSamplers];
+		Binding m_boundBindings[kTextureSamplers];
+		uint8_t m_boundDimensions[kTextureSamplers];
+		uint8_t m_boundStages[kTextureSamplers];
+		float m_borderColors[2][kTextureSamplers][4];
 		uint32_t m_borderValid[2] = {};
 		GX2TexAnisoRatio m_anisotropy = GX2_TEX_ANISO_RATIO_NONE;
 	};

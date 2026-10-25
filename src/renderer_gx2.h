@@ -142,7 +142,7 @@ namespace bgfx { namespace gx2
 		bool primitiveId = false;
 		uint32_t samplerMask = 0;
 		std::vector<Fetch> fetches;
-		PredefinedUniform m_predefined[PredefinedUniform::Count*2];
+		std::vector<PredefinedUniform> m_predefined;
 		uint16_t m_numPredefined = 0;
 	};
 
