@@ -151,6 +151,7 @@ namespace bgfx { namespace gx2
 		std::vector<Fetch> fetches;
 		std::vector<PredefinedUniform> m_predefined;
 		uint16_t m_numPredefined = 0;
+		uint16_t m_numMvpPredefined = 0;
 	};
 
 	struct TextureStage

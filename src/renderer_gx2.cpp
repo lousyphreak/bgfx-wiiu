@@ -1118,6 +1118,7 @@ namespace bgfx { namespace gx2
 		void createProgram(ProgramHandle _handle, ShaderHandle _vsh, ShaderHandle _fsh) override
 		{
 			Program& program = m_programs[_handle.idx];
+			program.m_numMvpPredefined = 0;
 			if (!isValid(_fsh))
 			{
 				program.compute = &m_shaders[_vsh.idx];
@@ -1137,6 +1138,11 @@ namespace bgfx { namespace gx2
 			program.m_predefined = program.vertex->predefined;
 			program.m_predefined.insert(program.m_predefined.end(), program.fragment->predefined.begin(), program.fragment->predefined.end());
 			program.m_numPredefined = uint16_t(program.m_predefined.size());
+			// Group complete MVP destinations for the per-view default-model cache.
+			for (uint16_t ii = 0; ii < program.m_numPredefined; ++ii)
+				if ((program.m_predefined[ii].m_type & ~kUniformFragmentBit) == PredefinedUniform::ModelViewProj
+				&& program.m_predefined[ii].m_count >= 4)
+					std::swap(program.m_predefined[program.m_numMvpPredefined++], program.m_predefined[ii]);
 		}
 
 		void destroyProgram(ProgramHandle _handle) override
@@ -2962,6 +2968,41 @@ namespace bgfx { namespace gx2
 			}
 		}
 
+		struct DefaultMvpCache
+		{
+			alignas(16) uint8_t data[64];
+			bool valid = false;
+		};
+
+		void predefined(ViewState& _state, uint16_t _view, const View& _renderView,
+			const Program& _program, const Frame* _frame, const RenderDraw& _draw, DefaultMvpCache& _cache)
+		{
+			// Reuse ViewState's calculations for every other predefined value.
+			struct Range { const PredefinedUniform* m_predefined; uint16_t m_numPredefined; };
+			Range range = { _program.m_predefined.data(), _program.m_numPredefined };
+			if (_draw.m_startMatrix == 0 && _program.m_numMvpPredefined)
+			{
+				if (!_cache.valid)
+				{
+					const Range first = { range.m_predefined, 1 };
+					_state.setPredefined<4>(this, _view, _renderView, first, _frame, _draw);
+					const PredefinedUniform& uniform = *range.m_predefined;
+					bx::memCopy(_cache.data, m_stageData[0 != (uniform.m_type & kUniformFragmentBit)]+uniform.m_loc*4, 64);
+					_cache.valid = true;
+				}
+				// The frame's default model and view projection are immutable here.
+				// Cache CPU-owned little-endian bytes, never a reclaimable GPU snapshot.
+				for (uint16_t ii = 0; ii < _program.m_numMvpPredefined; ++ii)
+				{
+					const PredefinedUniform& uniform = range.m_predefined[ii];
+					bx::memCopy(m_stageData[0 != (uniform.m_type & kUniformFragmentBit)]+uniform.m_loc*4, _cache.data, 64);
+				}
+				range.m_predefined += _program.m_numMvpPredefined;
+				range.m_numPredefined -= _program.m_numMvpPredefined;
+			}
+			if (range.m_numPredefined) _state.setPredefined<4>(this, _view, _renderView, range, _frame, _draw);
+		}
+
 		void setShaderUniform4f(uint8_t _flags, uint32_t _loc, const void* _data, uint32_t _num)
 		{ writeFloats(m_stageData[0 != (_flags & kUniformFragmentBit)]+_loc*4, _data, _num*4); }
 		void setShaderUniform4x4f(uint8_t _flags, uint32_t _loc, const void* _data, uint32_t _num)
@@ -4413,6 +4454,7 @@ namespace bgfx { namespace gx2
 			BlitState blits(_render);
 			UniformCacheState ucs(_render);
 			ViewState viewState(_render);
+			DefaultMvpCache defaultMvp;
 			uint16_t view = UINT16_MAX;
 			beginBatch();
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
@@ -4425,6 +4467,7 @@ namespace bgfx { namespace gx2
 				{
 					endViewTimer(_render, viewTimer); viewTimer = UINT32_MAX;
 					view = key.m_view;
+					defaultMvp.valid = false;
 					Window* window = windowFor(renderView.m_fbh);
 					if (window) window->used = true;
 					if (blits.hasItem(view)) graphicsImagesConsume(images, exports, kInvalidHandle, true);
@@ -4512,7 +4555,7 @@ namespace bgfx { namespace gx2
 				GX2SetScissor(scissor.m_x, scissor.m_y, scissor.m_width, scissor.m_height);
 				uniformsBegin(program);
 				viewState.m_alphaRef = float((draw.m_stateFlags & BGFX_STATE_ALPHA_REF_MASK) >> BGFX_STATE_ALPHA_REF_SHIFT)/255;
-				viewState.setPredefined<4>(this, view, renderView, program, _render, draw);
+				predefined(viewState, view, renderView, program, _render, draw, defaultMvp);
 				uniformsEnd(program);
 				const DepthControl& depth = draw.m_depthBias == UINT16_MAX ? renderView.m_depthBias : _render->m_frameCache.m_depthBiasCache.m_cache[draw.m_depthBias];
 				depthControl(depth);
