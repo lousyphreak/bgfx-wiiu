@@ -3329,14 +3329,15 @@ namespace bgfx { namespace gx2
 					&& (!(m_borderValid[1] & (1u << ii)) || 0 != bx::memCmp(m_borderColors[1][ii], color, 16));
 				const bool borderChanged = vertexBorderChanged || pixelBorderChanged;
 				GX2TexBorderType borderType = GX2_TEX_BORDER_TYPE_VARIABLE;
-				if (color[0] == 0 && color[1] == 0 && color[2] == 0)
-				{
-					if (color[3] == 0) borderType = GX2_TEX_BORDER_TYPE_TRANSPARENT_BLACK;
-					else if (color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_BLACK;
-				}
-				else if (color[0] == 1 && color[1] == 1 && color[2] == 1 && color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_WHITE;
+
 				if (m_boundTextures[ii] != &texture.texture || !(m_boundBindings[ii] == bind) || m_boundDimensions[ii] != encodedDimension || borderChanged || (m_boundStages[ii] & stages) != stages)
 				{
+					if (color[0] == 0 && color[1] == 0 && color[2] == 0)
+					{
+						if (color[3] == 0) borderType = GX2_TEX_BORDER_TYPE_TRANSPARENT_BLACK;
+						else if (color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_BLACK;
+					}
+					else if (color[0] == 1 && color[1] == 1 && color[2] == 1 && color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_WHITE;
 					GX2Texture view = texture.texture.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && dimension == TextureDimension::Dimension2DArray ? texture.arrayView : texture.texture;
 					view.viewFirstMip = bind.m_firstMip;
 					view.viewNumMips = bx::min<uint32_t>(bind.m_numMips, view.surface.mipLevels-bind.m_firstMip);
