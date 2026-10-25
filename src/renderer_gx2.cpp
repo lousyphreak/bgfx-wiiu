@@ -1267,23 +1267,9 @@ namespace bgfx { namespace gx2
 				resolveTexture(texture);
 				// Native writes cannot rebuild separate Hi-Z metadata on shared depth storage.
 				if (texture.hiZ && !texture.renderImage) retire(texture.hiZ);
-				if (texture.image && texture.image->stamp > GX2GetRetiredTimeStamp())
-				{
-					Block* old = texture.image;
-					GX2Surface previous = texture.texture.surface;
-					texture.image = reuse(texture.spareImages, old->size, previous.alignment, true);
-					textureStorage(texture, texture.image);
-					// Preserve only on rename; all reads of the old backing remain immutable.
-					for (uint32_t mip = 0; mip < previous.mipLevels; ++mip)
-						for (uint32_t slice = 0; slice < texture.levels[mip].slices.size(); ++slice)
-						{
-							const TextureLevel& level = texture.levels[mip];
-							const std::vector<Rect>& dirty = level.slices[slice].dirty;
-							const bool replaced = dirty.size() == 1 && !dirty[0].m_x && !dirty[0].m_y && dirty[0].m_width == level.source.width && dirty[0].m_height == level.source.height;
-							if (!replaced) GX2CopySurface(&previous, mip, slice, &texture.texture.surface, mip, slice);
-						}
-					touch(old); texture.spareImages.push_back(old);
-				}
+				// Only the CPU-written staging needs renaming. Destination writes are
+				// ordered GPU copies after earlier readers; keep untouched subresources
+				// in place instead of copying them into another complete texture.
 				for (uint32_t mip = 0; mip < texture.levels.size(); ++mip)
 				{
 					TextureLevel& level = texture.levels[mip];
