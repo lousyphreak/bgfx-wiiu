@@ -2842,14 +2842,21 @@ namespace bgfx { namespace gx2
 			if (bytes) GX2CallDisplayList(m_list->data, bytes);
 		}
 
-		void uniformsBegin(Program& _program)
+		// Clears share the existing draw-command budget; neither path can fill a
+		// list with an unbounded run of commands that consumes no uniform bytes.
+		void reserveBatch(uint32_t _operations, uint32_t _uniformBytes)
 		{
-			const uint32_t bytes = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
-			if (m_batchDraws == 32 || m_uploadUsed+bytes > m_upload->size)
+			if (m_batchDraws+_operations > 32 || m_uploadUsed+_uniformBytes > m_upload->size)
 			{
 				endBatch(); beginBatch();
 			}
-			++m_batchDraws;
+			m_batchDraws += _operations;
+		}
+
+		void uniformsBegin(Program& _program)
+		{
+			const uint32_t bytes = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
+			reserveBatch(1, bytes);
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
@@ -3546,7 +3553,7 @@ namespace bgfx { namespace gx2
 			const Rect& rect = _view.m_clippedRect;
 			if (!integerMask && rect.m_x == 0 && rect.m_y == 0 && rect.m_width == m_targetWidth && rect.m_height == m_targetHeight)
 			{
-				endBatch();
+				reserveBatch(bx::countBits(colorMask)+(m_hasDepth && depthFlags ? 1u : 0u), 0);
 				for (uint32_t ii = 0; ii < m_numColors; ++ii)
 					if (colorMask & (1u << ii))
 					{
@@ -3588,7 +3595,7 @@ namespace bgfx { namespace gx2
 					}
 					else window->depth = m_activeDepth;
 				}
-				restore(); bindFrameBuffer(m_currentFrameBuffer); beginBatch(); viewport(_view);
+				restore(); bindFrameBuffer(m_currentFrameBuffer); viewport(_view);
 			}
 			else
 			{
