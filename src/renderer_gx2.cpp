@@ -1875,7 +1875,7 @@ namespace bgfx { namespace gx2
 			return block;
 		}
 
-		void fullscreen(Program& _program, const GX2Texture& _source, GX2ColorBuffer* _color, GX2DepthBuffer* _depth, uint32_t _width, uint32_t _height, const float* _params = NULL, const GX2Texture* _stencil = NULL, const Rect* _rect = NULL)
+		void fullscreen(Program& _program, const GX2Texture& _source, GX2ColorBuffer* _color, GX2DepthBuffer* _depth, uint32_t _width, uint32_t _height, const float* _params = NULL, const GX2Texture* _stencil = NULL, const Rect* _rect = NULL, bool _sampleFrequency = false)
 		{
 			if (_color) GX2SetColorBuffer(_color, GX2_RENDER_TARGET_0);
 			if (_depth)
@@ -1901,7 +1901,13 @@ namespace bgfx { namespace gx2
 			if (_params) updateUniform(m_uniformReg.find("u_mipGen")->m_handle.idx, _params, 16);
 			uniformsBegin(_program); uniformsEnd(_program);
 			RenderDraw draw; draw.clear(); draw.m_streamMask = 0; vertexInput(_program, draw);
+			// Retail GX2 initializes PA_SC_MODE_CNTL to 0x14001. Its AA setter
+			// changes sample locations/count, but never PS_ITER_SAMPLE (bit 17).
+			alignas(64) static const uint32_t sampleFrequency[] = {0xc0016900, 0x293, 0x34001};
+			alignas(64) static const uint32_t pixelFrequency[] = {0xc0016900, 0x293, 0x14001};
+			if (_sampleFrequency) GX2CopyDisplayList(sampleFrequency, sizeof(sampleFrequency));
 			GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3, 0, 1);
+			if (_sampleFrequency) GX2CopyDisplayList(pixelFrequency, sizeof(pixelFrequency));
 		}
 
 		void resolveDepth(Texture& _texture, const RenderView& _view)
@@ -2359,10 +2365,94 @@ namespace bgfx { namespace gx2
 			}
 		}
 
+		void transferColorSamples(const BlitItem& _blit)
+		{
+			Texture& src = m_textures[_blit.m_src.idx];
+			Texture& dst = m_textures[_blit.m_dst.idx];
+			if (src.texture.surface.aa != dst.texture.surface.aa)
+			{ unsupported("color sample copy requires matching AA modes"); return; }
+			if (!dst.image || !dst.auxiliary)
+			{ unsupported("external MSAA color destination lacks auxiliary metadata"); return; }
+			const uint64_t sourceBegin = OSEffectiveToPhysical(uint32_t(uintptr_t(src.texture.surface.image)));
+			const uint64_t destinationBegin = OSEffectiveToPhysical(uint32_t(uintptr_t(dst.texture.surface.image)));
+			const bool aliased = sourceBegin < destinationBegin+dst.texture.surface.imageSize
+				&& destinationBegin < sourceBegin+src.texture.surface.imageSize;
+			resolveTexture(src);
+			// A borrowed source may alias the owned target's pending AA writes.
+			if (aliased && &src != &dst) resolveTexture(dst);
+			if (src.image) touch(src.image);
+			if (src.auxiliary) touch(src.auxiliary);
+			const uint16_t count = bx::max<uint16_t>(1, _blit.m_depth);
+			const uint32_t width = bx::min<uint32_t>(_blit.m_width,
+				bx::max(1u, src.texture.surface.width >> _blit.m_srcMip)-_blit.m_srcX,
+				bx::max(1u, dst.texture.surface.width >> _blit.m_dstMip)-_blit.m_dstX);
+			const uint32_t height = bx::min<uint32_t>(_blit.m_height,
+				bx::max(1u, src.texture.surface.height >> _blit.m_srcMip)-_blit.m_srcY,
+				bx::max(1u, dst.texture.surface.height >> _blit.m_dstMip)-_blit.m_dstY);
+			GX2Texture source = src.texture;
+			source.surface.format = GX2SurfaceFormat(uint32_t(source.surface.format) & ~0x400u);
+			source.compMap = GX2_COMP_MAP(0, 1, 2, 3);
+			source.viewFirstMip = _blit.m_srcMip; source.viewNumMips = 1;
+			source.viewFirstSlice = _blit.m_srcZ; source.viewNumSlices = 1;
+			auto copy = [&](GX2Texture input, GX2ColorBuffer output, const Rect& rect, int32_t offsetX, int32_t offsetY)
+			{
+				Program& program = m_programs[m_mipGen->m_program[input.surface.dim == GX2_SURFACE_DIM_TEXTURE_2D_MSAA_ARRAY ? 17 : 16].idx];
+				output.surface.format = input.surface.format;
+				const float params[4] = {float(offsetX), float(offsetY), 0, 0};
+				restore(); beginBatch();
+				for (uint16_t slice = 0; slice < count; ++slice)
+				{
+					GX2InitTextureRegs(&input);
+					output.viewNumSlices = 1; GX2InitColorBufferRegs(&output);
+					fullscreen(program, input, &output, NULL,
+						bx::max(1u, output.surface.width >> output.viewMip), bx::max(1u, output.surface.height >> output.viewMip),
+						params, NULL, &rect, true);
+					++input.viewFirstSlice; ++output.viewFirstSlice;
+				}
+				endBatch();
+			};
+			Block* snapshotImage = NULL;
+			Block* snapshotAuxiliary = NULL;
+			if (aliased)
+			{
+				// Capture every selected layer before writing any destination layer;
+				// per-layer snapshots would corrupt overlapping array self-copies.
+				GX2Surface snapshot = source.surface;
+				snapshot.width = width; snapshot.height = height; snapshot.depth = count; snapshot.mipLevels = 1;
+				snapshot.dim = count > 1 ? GX2_SURFACE_DIM_TEXTURE_2D_MSAA_ARRAY : GX2_SURFACE_DIM_TEXTURE_2D_MSAA;
+				snapshot.use = GX2SurfaceUse(GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER);
+				snapshot.swizzle = 0; snapshot.tileMode = GX2_TILE_MODE_DEFAULT;
+				snapshotImage = surfaceStorage(snapshot);
+				GX2ColorBuffer color = {}; color.surface = snapshot; color.viewNumSlices = count;
+				uint32_t bytes, alignment; GX2CalcColorBufferAuxInfo(&color, &bytes, &alignment);
+				snapshotAuxiliary = allocate(bytes, alignment);
+				bx::memSet(snapshotAuxiliary->data, GX2_AUX_BUFFER_CLEAR_VALUE, bytes);
+				DCFlushRange(snapshotAuxiliary->data, bytes);
+				color.aaBuffer = snapshotAuxiliary->data; color.aaSize = bytes;
+				const Rect rect = {0, 0, uint16_t(width), uint16_t(height)};
+				copy(source, color, rect, _blit.m_srcX, _blit.m_srcY);
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, snapshotImage->data, snapshotImage->size);
+				GX2InitColorBufferRegs(&color); GX2ExpandAAColorBuffer(&color);
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, snapshotImage->data, snapshotImage->size);
+				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, snapshotImage->data, snapshotImage->size);
+				source.surface = snapshot; source.viewFirstMip = 0; source.viewFirstSlice = 0;
+			}
+			GX2ColorBuffer destination = colorBuffer(dst, {_blit.m_dstMip, _blit.m_dstZ, count});
+			const Rect rect = {int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), uint16_t(width), uint16_t(height)};
+			copy(source, destination, rect, int32_t(snapshotImage ? 0 : _blit.m_srcX)-_blit.m_dstX, int32_t(snapshotImage ? 0 : _blit.m_srcY)-_blit.m_dstY);
+			markRendered(dst, {_blit.m_dstMip, _blit.m_dstZ, count});
+			invalidateTexture(dst, GX2_INVALIDATE_MODE_COLOR_BUFFER);
+			touch(dst.image); touch(dst.auxiliary);
+			if (snapshotImage) { touch(snapshotImage); touch(snapshotAuxiliary); retire(snapshotImage); retire(snapshotAuxiliary); }
+		}
+
 		void transferTextureBlit(const BlitItem& _blit)
 		{
 			Texture& src = m_textures[_blit.m_src.idx];
 			Texture& dst = m_textures[_blit.m_dst.idx];
+			if (src.texture.surface.aa != GX2_AA_MODE1X && dst.texture.surface.aa != GX2_AA_MODE1X
+			&& !bimg::isDepth(bimg::TextureFormat::Enum(src.format)))
+			{ transferColorSamples(_blit); return; }
 			const uint16_t count = bx::max<uint16_t>(1, _blit.m_depth);
 			const bool resolve = src.texture.surface.aa != GX2_AA_MODE1X
 				&& dst.texture.surface.aa == GX2_AA_MODE1X && !bimg::isDepth(bimg::TextureFormat::Enum(src.format));
