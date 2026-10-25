@@ -1608,21 +1608,21 @@ namespace bgfx { namespace gx2
 
 		uint32_t beginGpuTimer(uint16_t _view, uint32_t _frameNum)
 		{
-			Block* begin = reuse(m_freeQueryBlocks, 64, 64, true);
-			// The native sampling call publishes its sentinel in an owned 64-byte slot.
-			GX2SampleBottomGPUCycle((uint64_t*)begin->data);
-			touch(begin);
+			Block* block = reuse(m_freeTimerBlocks, 128, 64, true);
+			// Each native sample publishes its sentinel in a separate CPU cache line.
+			GX2SampleBottomGPUCycle((uint64_t*)block->data);
+			touch(block);
 			const uint32_t index = uint32_t(m_pendingGpuTimers.size());
-			m_pendingGpuTimers.push_back({ begin, NULL, _frameNum, _view });
+			m_pendingGpuTimers.push_back({ block, _frameNum, _view });
 			return index;
 		}
 
 		void endGpuTimer(uint32_t _index)
 		{
 			GpuTimerSample& sample = m_pendingGpuTimers[_index];
-			sample.end = reuse(m_freeQueryBlocks, 64, 64, true);
-			GX2SampleBottomGPUCycle((uint64_t*)sample.end->data);
-			touch(sample.end);
+			GX2SampleBottomGPUCycle((uint64_t*)((uint8_t*)sample.block->data+64));
+			// A batch may have sealed begin already. Retirement must cover end too.
+			touch(sample.block);
 		}
 
 		void resolveGpuTimers(Frame* _render)
@@ -1632,14 +1632,13 @@ namespace bgfx { namespace gx2
 			for (; consumed < m_pendingGpuTimers.size(); ++consumed)
 			{
 				const GpuTimerSample& sample = m_pendingGpuTimers[consumed];
-				// All intervals are closed before the next submit's resolver. The end's
-				// submission covers its earlier begin, even across batch splits/seals.
-				if (sample.end->stamp > completed) break;
-				DCInvalidateRange(sample.begin->data, sample.begin->size);
-				DCInvalidateRange(sample.end->data, sample.end->size);
+				// All intervals are closed before the next submit's resolver. The owner
+				// is touched at both ends, including across batch splits/seals.
+				if (sample.block->stamp > completed) break;
+				DCInvalidateRange(sample.block->data, sample.block->size);
 				// GX2's cycle API exposes native u64 values, unlike raw query regs.
-				const uint64_t begin = *(const uint64_t*)sample.begin->data;
-				const uint64_t end = *(const uint64_t*)sample.end->data;
+				const uint64_t begin = *(const uint64_t*)sample.block->data;
+				const uint64_t end = *(const uint64_t*)((const uint8_t*)sample.block->data+64);
 				if (begin != GX2_GPU_TIMESTAMP_INVALID && end != GX2_GPU_TIMESTAMP_INVALID)
 				{
 					GpuTimerResult& result = m_gpuTimerResults[sample.view];
@@ -1651,8 +1650,7 @@ namespace bgfx { namespace gx2
 				}
 				// An invalid retired timestamp cannot become valid later: keep the
 				// last valid stats, and recycle without a readiness spin or a wait.
-				m_freeQueryBlocks.push_back(sample.begin);
-				m_freeQueryBlocks.push_back(sample.end);
+				m_freeTimerBlocks.push_back(sample.block);
 			}
 			m_pendingGpuTimers.erase(m_pendingGpuTimers.begin(), m_pendingGpuTimers.begin() + consumed);
 			const GpuTimerResult& result = m_gpuTimerResults[BGFX_CONFIG_MAX_VIEWS];
@@ -4566,6 +4564,7 @@ namespace bgfx { namespace gx2
 		std::vector<OcclusionSample> m_pendingOcclusion;
 		std::vector<Block*> m_freeQueryBlocks;
 		std::vector<GpuTimerSample> m_pendingGpuTimers;
+		std::vector<Block*> m_freeTimerBlocks;
 		GpuTimerResult m_gpuTimerResults[BGFX_CONFIG_MAX_VIEWS + 1];
 		uint32_t m_maxGpuLatency = 0;
 		uint32_t m_frameGpuTimer = UINT32_MAX;

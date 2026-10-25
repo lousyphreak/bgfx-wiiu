@@ -49,8 +49,7 @@ namespace bgfx { namespace gx2
 
 	struct GpuTimerSample
 	{
-		Block* begin;
-		Block* end;
+		Block* block; // Separate 64-byte cache lines for begin/end samples.
 		uint32_t frameNum;
 		uint16_t view; // BGFX_CONFIG_MAX_VIEWS is the frame interval.
 	};
