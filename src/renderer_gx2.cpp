@@ -4352,7 +4352,8 @@ namespace bgfx { namespace gx2
 					if (m_currentFrameBuffer.idx != renderView.m_fbh.idx)
 					{
 						endBatch(); finishRenderPass();
-						restore(); bindFrameBuffer(renderView.m_fbh); beginBatch();
+						// Binding restores only after a real helper or native context change.
+						bindFrameBuffer(renderView.m_fbh); beginBatch();
 					}
 					viewTimer = beginViewTimer(_render, view);
 					while (ucs.hasItem(view))
