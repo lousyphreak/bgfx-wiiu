@@ -256,6 +256,9 @@ namespace bgfx { namespace gx2
 	{
 		RendererContextGX2(const Init& _init)
 		{
+			m_gpuTimeout = GX2GetGPUTimeout();
+			// Short host timeouts can reset legitimate full-resolution fragment loops.
+			GX2SetGPUTimeout(bx::max(m_gpuTimeout, 10000u));
 			m_defaultVertex = allocate(16);
 			bx::memSet(m_defaultVertex->data, 0, 16);
 			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, m_defaultVertex->data, 16);
@@ -318,6 +321,7 @@ namespace bgfx { namespace gx2
 				for (FrameBuffer& fb : m_frameBuffers) destroyWindow(fb.window);
 				if (m_headlessContext) GX2SetContextState(NULL);
 				GX2DrawDone(); seal();
+				GX2SetGPUTimeout(m_gpuTimeout);
 			}
 			// An unavailable adapter has already drained GX2 before releasing foreground.
 			transferPublish(true);
@@ -4445,6 +4449,7 @@ namespace bgfx { namespace gx2
 		TextureFormat::Enum m_captureFormat = TextureFormat::Unknown;
 
 		Window m_mainWindow;
+		uint32_t m_gpuTimeout;
 		GX2ContextState* m_headlessContext = NULL;
 		GX2ContextState* m_context = NULL;
 		Buffer m_indexBuffers[BGFX_CONFIG_MAX_INDEX_BUFFERS];
