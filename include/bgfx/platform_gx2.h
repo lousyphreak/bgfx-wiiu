@@ -56,6 +56,8 @@ namespace bgfx
 	/// until shutdown. GX2 must already be initialized. Use inline rendering
 	/// (BGFX_CONFIG_MULTITHREADED=0); Wii U builds always present after rendering.
 	/// query reads current availability, not a cached foreground generation.
+	/// Before withdrawing targets, the host drains preceding GPU work; SDL does
+	/// this on foreground release. bgfx shutdown then frees storage without GX2 calls.
 	/// present must submit preceding bgfx work before returning. SDL_WIIU_SwapWindow
 	/// provides that submission before its adapter-owned scan copy/swap sequence.
 	/// When using separate TV/DRC windows, touch/render both each frame so SDL can
