@@ -70,6 +70,8 @@ target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include PRIVATE ${BGFX_DIR}/3
 target_compile_options(bgfx PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_MULTITHREADED=0
     PRIVATE BGFX_CONFIG_VIDEO=0 BGFX_CONFIG_MIP_GEN_FALLBACK=0 BGFX_CONFIG_BLIT_FALLBACK=0)
+set(BGFX_GX2_PROFILER 0 CACHE STRING "GX2 profiling: 0 off, 1 cycles/cache, 2 stalls, 3 low-overhead timing")
+target_compile_definitions(bgfx PRIVATE BGFX_CONFIG_GX2_PROFILER=${BGFX_GX2_PROFILER})
 target_link_libraries(bgfx PUBLIC bimg)
 
 option(BGFX_BUILD_EXAMPLES "Build original bgfx examples with the Wii U SDL3 entry" OFF)

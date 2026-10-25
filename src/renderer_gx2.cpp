@@ -7,6 +7,7 @@
 #if BGFX_CONFIG_RENDERER_GX2
 #include "renderer.h"
 #include "renderer_gx2.h"
+#include "renderer_gx2_profiler.h"
 #include "cs_gx2_indirect.gx2.bin.h"
 #include "cs_gx2_indirect_indexed.gx2.bin.h"
 #include "cs_gx2_indirect_dispatch.gx2.bin.h"
@@ -286,6 +287,7 @@ namespace bgfx { namespace gx2
 	{
 		RendererContextGX2(const Init& _init)
 		{
+			GX2_PROFILE(init());
 			m_gpuTimeout = GX2GetGPUTimeout();
 			// Short host timeouts can reset legitimate full-resolution fragment loops.
 			GX2SetGPUTimeout(bx::max(m_gpuTimeout, 10000u));
@@ -355,6 +357,7 @@ namespace bgfx { namespace gx2
 				GX2DrawDone(); seal();
 				GX2SetGPUTimeout(m_gpuTimeout);
 			}
+			GX2_PROFILE(finish());
 			// An unavailable adapter has already drained GX2 before releasing foreground.
 			transferPublish(true);
 			for (Block* block : m_allocations)
@@ -420,6 +423,7 @@ namespace bgfx { namespace gx2
 
 		void collect()
 		{
+			GX2_PROFILE_SCOPE(Collect);
 			const OSTime completed = GX2GetRetiredTimeStamp();
 			for (size_t ii = 0; ii < m_retired.size();)
 			{
@@ -449,12 +453,14 @@ namespace bgfx { namespace gx2
 
 		void endFrame(bool _willPresent) override
 		{
+			GX2_PROFILE_SCOPE(EndFrame);
 			transferPublish();
 			const bool present = _willPresent && preparePresent();
 			if (m_frameGpuTimer != UINT32_MAX)
 			{
 				endGpuTimer(m_frameGpuTimer); m_frameGpuTimer = UINT32_MAX;
 			}
+			GX2_PROFILE(end());
 			if (!present && (!m_touched.empty() || m_lists.head != m_lists.sealed || m_uploads.head != m_uploads.sealed))
 			{
 				GX2Flush(); seal();
@@ -465,6 +471,7 @@ namespace bgfx { namespace gx2
 
 		void flip() override
 		{
+			GX2_PROFILE_SCOPE(Flip);
 			bool present = m_mainWindow.used;
 			for (FrameBuffer& fb : m_frameBuffers) present |= fb.window.used;
 			if (!present) return;
@@ -475,13 +482,13 @@ namespace bgfx { namespace gx2
 				uint32_t swaps, flips;
 				OSTime lastFlip, lastVsync;
 				GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
-				if (swaps - flips >= 2) GX2WaitForFlip();
+				if (swaps - flips >= 2) { GX2_PROFILE_SCOPE(FlipWait); GX2WaitForFlip(); }
 			}
 			else
 			{
 				const OSTime stamp = m_presentStamps[m_presentCursor];
 				if (stamp > GX2GetRetiredTimeStamp())
-					while (!GX2WaitTimeStamp(stamp)) {}
+					{ GX2_PROFILE_SCOPE(PresentGpuWait); while (!GX2WaitTimeStamp(stamp)) {} }
 			}
 			presentWindow(m_mainWindow);
 			for (FrameBuffer& fb : m_frameBuffers) presentWindow(fb.window);
@@ -493,9 +500,12 @@ namespace bgfx { namespace gx2
 
 		uint32_t acquire(SubmissionRing& _ring, uint32_t _size)
 		{
+			GX2_PROFILE_SCOPE_SELECT(&_ring == &m_lists ? Gx2Profiler::ListAcquire : Gx2Profiler::UniformAcquire);
 			if (!_ring.block)
 			{
 				_ring.block = allocate(&_ring == &m_lists ? kListRingSize : kUniformRingSize, 256);
+				GX2_PROFILE_ADD(ListAllocated, &_ring == &m_lists ? _ring.block->size : 0);
+				GX2_PROFILE_ADD(UniformAllocated, &_ring == &m_uploads ? _ring.block->size : 0);
 				_ring.epochs.reserve(BGFX_CONFIG_MAX_FRAME_LATENCY*2);
 				// Display-list payloads are subsequently written only by write-gather.
 				if (&_ring == &m_lists) DCFlushRange(_ring.block->data, _ring.block->size);
@@ -527,7 +537,7 @@ namespace bgfx { namespace gx2
 					do
 					{
 						const OSTime stamp = _ring.epochs.front().stamp;
-						while (!GX2WaitTimeStamp(stamp)) {}
+						{ GX2_PROFILE_SCOPE_SELECT(&_ring == &m_lists ? Gx2Profiler::ListWait : Gx2Profiler::UniformWait); while (!GX2WaitTimeStamp(stamp)) {} }
 						reclaim();
 					} while (start+_size > _ring.tail+capacity);
 				}
@@ -590,7 +600,7 @@ namespace bgfx { namespace gx2
 			if (!_buffer.gpuWritten) return;
 			if (_buffer.block->stamp == kPending) { GX2Flush(); seal(); }
 			if (_buffer.block->stamp > GX2GetRetiredTimeStamp())
-				while (!GX2WaitTimeStamp(_buffer.block->stamp)) {}
+				{ GX2_PROFILE_SCOPE(BufferReadWait); while (!GX2WaitTimeStamp(_buffer.block->stamp)) {} }
 			DCInvalidateRange(_buffer.block->data, _buffer.block->size);
 			_buffer.gpuWritten = false;
 		}
@@ -598,7 +608,10 @@ namespace bgfx { namespace gx2
 		void update(Buffer& _buffer, uint32_t _offset, uint32_t _size, const void* _data,
 			bool _vertex, bool _discard = false)
 		{
+			GX2_PROFILE_SCOPE_SELECT(_vertex ? Gx2Profiler::VertexUpload : Gx2Profiler::IndexUpload);
 			_size = bx::min(_size, _buffer.size-_offset);
+			GX2_PROFILE_ADD(VertexBytes, _vertex ? _size : 0);
+			GX2_PROFILE_ADD(IndexBytes, _vertex ? 0 : _size);
 			const bool preserve = !_discard && (_offset != 0 || _size != _buffer.size);
 			// Preserving GPU-written bytes is an actual CPU read. Full overwrites and
 			// explicit discard rename live storage without waiting for it.
@@ -607,9 +620,11 @@ namespace bgfx { namespace gx2
 			const bool rename = _buffer.block->stamp > GX2GetRetiredTimeStamp();
 			if (rename)
 			{
+				GX2_PROFILE_ADD(BufferRenames, 1);
 				Block* replacement = reuse(_buffer.spare, _buffer.block->size,
 					(_buffer.flags & BGFX_BUFFER_COMPUTE_READ_WRITE) ? 256 : 64);
-				if (preserve) bx::memCopy(replacement->data, _buffer.block->data, _buffer.size);
+				if (preserve) GX2_PROFILE_ADD(PreserveBytes, _buffer.size);
+				if (preserve) { GX2_PROFILE_SCOPE(BufferPreserve); bx::memCopy(replacement->data, _buffer.block->data, _buffer.size); }
 				_buffer.spare.push_back(_buffer.block);
 				_buffer.block = replacement;
 			}
@@ -617,15 +632,15 @@ namespace bgfx { namespace gx2
 			_buffer.littleEndian = littleEndian;
 			// A partial CPU upload into a native GPU result keeps its representation;
 			// only the newly supplied native CPU words need endian conversion.
-			copyTextureRow((uint8_t*)_buffer.block->data+_offset, _data, _size,
-				littleEndian ? (!_vertex && !(_buffer.flags & BGFX_BUFFER_INDEX32) ? 2 : 4) : 0);
+			{ GX2_PROFILE_SCOPE(BufferCopy); copyTextureRow((uint8_t*)_buffer.block->data+_offset, _data, _size,
+				littleEndian ? (!_vertex && !(_buffer.flags & BGFX_BUFFER_INDEX32) ? 2 : 4) : 0); }
 			// A preserved rename wrote the whole buffer; otherwise only this range was
 			// CPU-written. CPU publication must never run on GPU-owned stale contents.
 			const bool whole = rename && preserve;
 			const GX2InvalidateMode consumer = GX2InvalidateMode((_vertex ? GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER : GX2_INVALIDATE_MODE_CPU)
 				| (_buffer.flags & BGFX_BUFFER_COMPUTE_READ ? GX2_INVALIDATE_MODE_TEXTURE : 0));
-			GX2Invalidate(consumer,
-				(uint8_t*)_buffer.block->data+(whole ? 0 : _offset), whole ? _buffer.size : _size);
+			{ GX2_PROFILE_SCOPE(BufferPublish); GX2Invalidate(consumer,
+				(uint8_t*)_buffer.block->data+(whole ? 0 : _offset), whole ? _buffer.size : _size); }
 		}
 
 		void readBuffer(Handle _handle, void* _data, uint32_t _offset, uint32_t _size) override
@@ -1177,11 +1192,13 @@ namespace bgfx { namespace gx2
 
 		TextureStage& textureStage(Texture& _texture, uint32_t _mip, uint32_t _slice)
 		{
+			GX2_PROFILE_SCOPE(StageReuse);
 			TextureLevel& level = _texture.levels[_mip];
 			TextureStage& stage = level.slices[_slice];
-			if (!stage.block) stage.block = allocate(level.source.imageSize, level.source.alignment);
+			if (!stage.block) { stage.block = allocate(level.source.imageSize, level.source.alignment); GX2_PROFILE_ADD(StageAllocated, stage.block->size); }
 			else if (stage.block->stamp > GX2GetRetiredTimeStamp())
 			{
+				GX2_PROFILE_ADD(StageRenames, 1);
 				Block* replacement = reuse(stage.spare, level.source.imageSize, level.source.alignment);
 				stage.spare.push_back(stage.block); stage.block = replacement;
 			}
@@ -1190,6 +1207,7 @@ namespace bgfx { namespace gx2
 
 		void stageTexture(Texture& _texture, uint32_t _mip, uint32_t _slice, const Rect& _rect, const void* _data, uint32_t _pitch, bool _littleEndian = BX_CPU_ENDIAN_LITTLE)
 		{
+			GX2_PROFILE_SCOPE(TextureStage);
 			TextureLevel& level = _texture.levels[_mip];
 			TextureStage& stage = textureStage(_texture, _mip, _slice);
 			const bimg::TextureFormat::Enum requested = bimg::TextureFormat::Enum(_texture.requestedFormat);
@@ -1303,6 +1321,10 @@ namespace bgfx { namespace gx2
 
 		void uploadTextures()
 		{
+			GX2_PROFILE_SCOPE(TextureUpload);
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+			const int profileUpload = m_pendingTextures.empty() ? -1 : s_gx2Profiler.beginUpload();
+#endif
 			bool published = false;
 			for (Texture* entry : m_pendingTextures)
 			{
@@ -1322,10 +1344,10 @@ namespace bgfx { namespace gx2
 							uint8_t* data = (uint8_t*)stage.block->data+offset;
 							// Sub-cache-line gaps cannot contain a cache line worth skipping.
 							if (pitch-rowBytes < BX_CACHE_LINE_SIZE)
-								DCStoreRangeNoSync(data, (rows-1)*pitch+rowBytes);
+								{ GX2_PROFILE_SCOPE(TexturePublish); DCStoreRangeNoSync(data, (rows-1)*pitch+rowBytes); }
 							else
 								for (uint32_t row = 0; row < rows; ++row)
-									DCStoreRangeNoSync(data+row*pitch, rowBytes);
+									{ GX2_PROFILE_SCOPE(TexturePublish); DCStoreRangeNoSync(data+row*pitch, rowBytes); }
 							published = true;
 						}
 					}
@@ -1375,6 +1397,9 @@ namespace bgfx { namespace gx2
 			// after this group; invalidate its input cache once for the whole group.
 			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, NULL, UINT32_MAX);
 			m_pendingTextures.clear();
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+			s_gx2Profiler.endUpload(profileUpload);
+#endif
 		}
 
 		void textureLevels(Texture& _texture)
@@ -1686,6 +1711,7 @@ namespace bgfx { namespace gx2
 
 		void resolveGpuTimers(Frame* _render)
 		{
+			GX2_PROFILE_SCOPE(ResolveTimers);
 			const OSTime completed = GX2GetRetiredTimeStamp();
 			size_t consumed = 0;
 			for (; consumed < m_pendingGpuTimers.size(); ++consumed)
@@ -1700,6 +1726,7 @@ namespace bgfx { namespace gx2
 				const uint64_t end = *(const uint64_t*)((const uint8_t*)sample.block->data+64);
 				if (begin != GX2_GPU_TIMESTAMP_INVALID && end != GX2_GPU_TIMESTAMP_INVALID)
 				{
+					GX2_PROFILE(gpu(sample.frameNum, sample.view, end-begin));
 					GpuTimerResult& result = m_gpuTimerResults[sample.view];
 					result.begin = int64_t(begin);
 					result.end = int64_t(end);
@@ -1723,7 +1750,14 @@ namespace bgfx { namespace gx2
 
 		uint32_t beginViewTimer(Frame* _render, uint16_t _view)
 		{
-			if (0 == (_render->m_debug & BGFX_DEBUG_PROFILER)) return UINT32_MAX;
+			if (0 == (_render->m_debug & BGFX_DEBUG_PROFILER))
+			{
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+				return beginGpuTimer(_view, _render->m_frameNum);
+#else
+				return UINT32_MAX;
+#endif
+			}
 			ViewStats& stats = _render->m_perfStats.viewStats[_render->m_perfStats.numViews];
 			stats.view = ViewId(_view);
 			bx::strCopy(stats.name, BGFX_CONFIG_MAX_VIEW_NAME, getViewName(_render, _view));
@@ -1735,6 +1769,9 @@ namespace bgfx { namespace gx2
 		{
 			if (_index == UINT32_MAX) return;
 			endGpuTimer(_index);
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+			if (0 == (_render->m_debug & BGFX_DEBUG_PROFILER)) return;
+#endif
 			ViewStats& stats = _render->m_perfStats.viewStats[_render->m_perfStats.numViews++];
 			stats.cpuTimeEnd = bx::getHPCounter();
 			const GpuTimerResult& result = m_gpuTimerResults[stats.view];
@@ -2441,7 +2478,7 @@ namespace bgfx { namespace gx2
 				if (output.block->stamp == kPending) { GX2Flush(); seal(); }
 				// A timeout is not completion. Only a due explicit readback (or shutdown)
 				// reaches this wait; normal screenshot/capture collection only polls.
-				while (!GX2WaitTimeStamp(output.block->stamp)) {}
+				{ GX2_PROFILE_SCOPE(ReadbackWait); while (!GX2WaitTimeStamp(output.block->stamp)) {} }
 				completed = GX2GetRetiredTimeStamp();
 			}
 			size_t count = 0;
@@ -2875,6 +2912,7 @@ namespace bgfx { namespace gx2
 
 		void restore()
 		{
+			GX2_PROFILE_ADD(ContextRestores, 1);
 			GX2SetContextState(m_context);
 			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
 			GX2SetStreamOutEnable(FALSE);
@@ -2911,14 +2949,16 @@ namespace bgfx { namespace gx2
 		void endBatch()
 		{
 			void* listData = (uint8_t*)m_lists.block->data+m_listOffset;
-			const uint32_t bytes = GX2EndDisplayList(listData);
+			uint32_t bytes;
+			{ GX2_PROFILE_SCOPE(ListFinish); bytes = GX2EndDisplayList(listData); }
+			GX2_PROFILE_ADD(ListBytes, bytes);
 			if (m_uploadUsed)
 			{
 				// Publish populated spans only; other ring ranges can still be in flight.
 				OSMemoryBarrier();
-				GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, (uint8_t*)m_uploads.block->data+m_uploadOffset, m_uploadUsed);
+				{ GX2_PROFILE_SCOPE(UniformInvalidate); GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, (uint8_t*)m_uploads.block->data+m_uploadOffset, m_uploadUsed); }
 			}
-			if (bytes) GX2CallDisplayList(listData, bytes);
+			if (bytes) { GX2_PROFILE_SCOPE(ListCall); GX2CallDisplayList(listData, bytes); }
 			m_lists.head += bx::alignUp(bytes, 64);
 			m_uploads.head += m_uploadUsed;
 		}
@@ -2941,21 +2981,32 @@ namespace bgfx { namespace gx2
 		{
 			const uint32_t bytes = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
 			reserveBatch(1, bytes);
+			GX2_PROFILE_SCOPE(UniformFill);
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
 				m_stageData[stage] = (uint8_t*)m_uploads.block->data + m_uploadOffset + m_uploadUsed;
 				// A fresh snapshot has no CPU contents to preserve. dcbz allocates its
 				// cache blocks without fetching the previous GPU-only bytes from MEM2.
-				if (shader.uniformSize) DCZeroRange(m_stageData[stage], shader.uniformSize);
+				GX2_PROFILE_ADD(UniformBytes, shader.uniformSize);
+				if (shader.uniformSize) { GX2_PROFILE_SCOPE(UniformZero); DCZeroRange(m_stageData[stage], shader.uniformSize); }
 				m_uploadUsed += bx::alignUp(shader.uniformSize, 256);
 				const GX2VertexShader* vertex = (const GX2VertexShader*)shader.header->data;
 				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
 				const uint32_t count = stage ? fragment->initialValueCount : vertex->initialValueCount;
 				const GX2UniformInitialValue* initial = stage ? fragment->initialValues : vertex->initialValues;
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+				if (count) { GX2_PROFILE_SCOPE(UniformInitial);
+#endif
 				for (uint32_t ii = 0; ii < count; ++ii)
 					writeFloats(m_stageData[stage]+initial[ii].offset*4, initial[ii].value, 4);
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+				}
+#endif
 				// Application values override native initializers; predefined fields follow.
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+				if (!shader.uniforms.empty()) { GX2_PROFILE_SCOPE(UniformApplication);
+#endif
 				for (const Uniform& uniform : shader.uniforms)
 				{
 					uint8_t* dst = m_stageData[stage]+uniform.offset*4;
@@ -2967,6 +3018,9 @@ namespace bgfx { namespace gx2
 					}
 					else writeFloats(dst, src, uniform.rows*4);
 				}
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+				}
+#endif
 			}
 		}
 
@@ -2979,6 +3033,7 @@ namespace bgfx { namespace gx2
 		void predefined(ViewState& _state, uint16_t _view, const View& _renderView,
 			const Program& _program, const Frame* _frame, const RenderDraw& _draw, DefaultMvpCache& _cache)
 		{
+			GX2_PROFILE_SCOPE(UniformPredefined);
 			// Reuse ViewState's calculations for every other predefined value.
 			struct Range { const PredefinedUniform* m_predefined; uint16_t m_numPredefined; };
 			Range range = { _program.m_predefined.data(), _program.m_numPredefined };
@@ -3012,12 +3067,13 @@ namespace bgfx { namespace gx2
 
 		void uniformsEnd(Program& _program)
 		{
+			GX2_PROFILE_SCOPE(UniformEnd);
 			// Snapshots are complete here. Skip the 256-byte alignment holes and release
 			// these GPU-only cache lines; endBatch orders all publications together.
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				const uint32_t size = (stage ? _program.fragment : _program.vertex)->uniformSize;
-				if (size) DCFlushRangeNoSync(m_stageData[stage], size);
+				if (size) { GX2_PROFILE_SCOPE(UniformPublish); DCFlushRangeNoSync(m_stageData[stage], size); }
 			}
 			if (_program.vertex->uniformSize) GX2SetVertexUniformBlock(0, _program.vertex->uniformSize, m_stageData[0]);
 			if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
@@ -3077,6 +3133,7 @@ namespace bgfx { namespace gx2
 
 		void vertexInput(Program& _program, const RenderDraw& _draw)
 		{
+			GX2_PROFILE_SCOPE(VertexInput);
 			const uint32_t streamMask = _draw.m_streamMask == UINT32_MAX ? 0 : _draw.m_streamMask;
 			uint32_t layouts[BGFX_CONFIG_MAX_VERTEX_STREAMS] = {};
 			uint32_t gpuEndianMask = 0;
@@ -3206,6 +3263,7 @@ namespace bgfx { namespace gx2
 
 		void state(uint64_t _state, uint64_t _stencil, uint32_t _rgba, bool _wireframe = false, bool _sampleFrequency = false)
 		{
+			GX2_PROFILE_SCOPE(PipelineState);
 			if (_state & BGFX_STATE_CONSERVATIVE_RASTER) unsupported("conservative raster");
 			const bool invalid = m_cachedState == UINT64_MAX;
 			const bool multisample = 0 != (_state & BGFX_STATE_MSAA);
@@ -3301,6 +3359,7 @@ namespace bgfx { namespace gx2
 
 		void textures(const RenderBind& _bind, const float _palette[][4])
 		{
+			GX2_PROFILE_SCOPE(Textures);
 			static const GX2TexClampMode clamps[] = { GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_CLAMP_MODE_MIRROR, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_CLAMP_MODE_CLAMP_BORDER };
 			for (uint32_t mask = m_boundProgram->samplerMask; mask; mask &= mask-1)
 			{
@@ -3352,8 +3411,8 @@ namespace bgfx { namespace gx2
 						view.compMap = GX2_COMP_MAP(1, 4, 4, 5);
 					}
 					GX2InitTextureRegs(&view);
-					if (stages & 2) GX2SetPixelTexture(&view, ii);
-					if (stages & 1) GX2SetVertexTexture(&view, ii);
+					if (stages & 2) { GX2_PROFILE_ADD(TextureSets, 1); GX2SetPixelTexture(&view, ii); }
+					if (stages & 1) { GX2_PROFILE_ADD(TextureSets, 1); GX2SetVertexTexture(&view, ii); }
 					GX2Sampler sampler;
 					GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
 					GX2InitSamplerClamping(&sampler, clamps[(flags & BGFX_SAMPLER_U_MASK) >> BGFX_SAMPLER_U_SHIFT],
@@ -3635,6 +3694,7 @@ namespace bgfx { namespace gx2
 
 		void presentWindow(Window& _window)
 		{
+			GX2_PROFILE_SCOPE(Present);
 			if (!_window.used) return;
 			const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
 			if (platform.presentColor)
@@ -4382,6 +4442,8 @@ namespace bgfx { namespace gx2
 
 		void submit(Frame* _render, const ClearQuad& _clearQuad, const MipGen& _mipGen, TextVideoMemBlitter& _blitter) override
 		{
+			GX2_PROFILE(begin(_render->m_frameNum, _render->m_numRenderItems != 0, 0 != (_render->m_reset & BGFX_RESET_VSYNC)));
+			GX2_PROFILE_SCOPE(Submit);
 			m_mipGen = &_mipGen; m_transferFrame = _render->m_frameNum; transferPublish();
 			Stats& stats = _render->m_perfStats;
 			stats.cpuTimeBegin = bx::getHPCounter(); stats.cpuTimerFreq = bx::getHPFrequency();
@@ -4394,6 +4456,9 @@ namespace bgfx { namespace gx2
 			const FrameBufferHandle initial = queryWindows(_render->m_mainSwapChain);
 			if (!m_context)
 			{ transferCapture(0 != (_render->m_reset & BGFX_RESET_CAPTURE)); stats.cpuTimeEnd = bx::getHPCounter(); return; }
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+			s_gx2Profiler.startGpu(_render->m_numRenderItems != 0);
+#endif
 			m_anisotropy = (_render->m_reset & BGFX_RESET_MAXANISOTROPY) ? GX2_TEX_ANISO_RATIO_16_TO_1 : GX2_TEX_ANISO_RATIO_NONE;
 			m_frameGpuTimer = beginGpuTimer(BGFX_CONFIG_MAX_VIEWS, _render->m_frameNum);
 			uint32_t viewTimer = UINT32_MAX;
@@ -4410,7 +4475,7 @@ namespace bgfx { namespace gx2
 			}
 			if (_render->m_iboffset) update(m_indexBuffers[_render->m_transientIb->handle.idx], 0, _render->m_iboffset, _render->m_transientIb->data, false, true);
 			if (_render->m_vboffset) update(m_vertexBuffers[_render->m_transientVb->handle.idx], 0, _render->m_vboffset, _render->m_transientVb->data, true, true);
-			_render->sort();
+			{ GX2_PROFILE_SCOPE(Sort); _render->sort(); }
 			uint32_t exportBytes = 0;
 			bool hasGraphicsImages = false;
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
