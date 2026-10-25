@@ -34,6 +34,9 @@ namespace entry
 	static Window s_windows[2];
 	static EventQueue s_events;
 	static SDL_Gamepad* s_gamepads[ENTRY_CONFIG_MAX_GAMEPADS];
+	// Remember the key chosen on press, so releasing ZL before X/Y still releases
+	// the corresponding keyboard alias. Other GamePad buttons retain their keys.
+	static Key::Enum s_faceKeys[ENTRY_CONFIG_MAX_GAMEPADS][2];
 	static bool s_quit;
 
 	static bool queryTarget(void* _userData, bgfx::Gx2Target* _target)
@@ -273,6 +276,11 @@ namespace entry
 						GamepadHandle handle = findGamepad(event.gdevice.which);
 						if (isValid(handle))
 						{
+							for (Key::Enum& key : s_faceKeys[handle.idx])
+							{
+								s_events.postKeyEvent(kDefaultWindowHandle, key, 0, false);
+								key = Key::None;
+							}
 							SDL_CloseGamepad(s_gamepads[handle.idx]);
 							s_gamepads[handle.idx] = NULL;
 							s_events.postGamepadEvent(kDefaultWindowHandle, handle, false);
@@ -281,7 +289,24 @@ namespace entry
 					break;
 				case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
 				case SDL_EVENT_GAMEPAD_BUTTON_UP:
-					s_events.postKeyEvent(kDefaultWindowHandle, translateButton(event.gbutton.button), 0, event.gbutton.down);
+					{
+						Key::Enum key = translateButton(event.gbutton.button);
+						if (event.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH || event.gbutton.button == SDL_GAMEPAD_BUTTON_WEST)
+						{
+							const GamepadHandle handle = findGamepad(event.gbutton.which);
+							if (!isValid(handle)) break;
+							const uint32_t face = event.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH ? 0 : 1;
+							Key::Enum& pressed = s_faceKeys[handle.idx][face];
+							if (event.gbutton.down)
+							{
+								if (SDL_GetGamepadAxis(s_gamepads[handle.idx], SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16384)
+									key = face == 0 ? Key::KeyC : Key::KeyD;
+								pressed = key;
+							}
+							else { key = pressed; pressed = Key::None; }
+						}
+						s_events.postKeyEvent(kDefaultWindowHandle, key, 0, event.gbutton.down);
+					}
 					break;
 				case SDL_EVENT_GAMEPAD_AXIS_MOTION:
 					{
