@@ -414,7 +414,7 @@ int SDL_main(int _argc, char** _argv)
 		SDL_Quit();
 		return 1;
 	}
-	chdir("fs:/vol/content");
+	chdir("fs:/vol/external01/bgfx");
 	int result = entry::main(_argc, _argv);
 	for (SDL_Gamepad* gamepad : entry::s_gamepads) SDL_CloseGamepad(gamepad);
 	for (entry::Window& win : entry::s_windows) SDL_DestroyWindow(win.window);

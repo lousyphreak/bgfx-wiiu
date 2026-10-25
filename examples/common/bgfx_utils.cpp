@@ -98,7 +98,12 @@ static void* loadMem(bx::FileReaderI* _reader, bx::AllocatorI* _allocator, const
 
 static bgfx::ShaderHandle loadShader(bx::FileReaderI* _reader, const bx::StringView& _name)
 {
+#if BX_PLATFORM_WIIU
+	// Shared assets live on SD; shaders stay with their matching executable.
+	bx::FilePath filePath("/vol/content/shaders/");
+#else
 	bx::FilePath filePath("shaders/");
+#endif // BX_PLATFORM_WIIU
 
 	switch (bgfx::getRendererType() )
 	{
