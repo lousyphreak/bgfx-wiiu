@@ -564,6 +564,11 @@ struct OcornutImguiContext
 		m_lastScroll = _scroll;
 
 #if USE_ENTRY
+#if BX_PLATFORM_WIIU
+		if (inputHasGamepad()) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+		else io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+
+#endif // BX_PLATFORM_WIIU
 		const uint8_t modifiers = inputGetModifiersState();
 		io.AddKeyEvent(ImGuiMod_Shift, 0 != (modifiers & (entry::Modifier::LeftShift | entry::Modifier::RightShift) ) );
 		io.AddKeyEvent(ImGuiMod_Ctrl,  0 != (modifiers & (entry::Modifier::LeftCtrl  | entry::Modifier::RightCtrl ) ) );

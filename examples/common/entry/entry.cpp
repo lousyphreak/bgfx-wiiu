@@ -846,8 +846,13 @@ restart:
 
 				case Event::Gamepad:
 					{
+#if BX_PLATFORM_WIIU
+						const GamepadEvent* gev = static_cast<const GamepadEvent*>(ev);
+						inputSetGamepadConnected(gev->m_gamepad, gev->m_connected);
+#else
 //						const GamepadEvent* gev = static_cast<const GamepadEvent*>(ev);
 //						DBG("gamepad %d, %d", gev->m_gamepad.idx, gev->m_connected);
+#endif // BX_PLATFORM_WIIU
 					}
 					break;
 
@@ -1031,7 +1036,11 @@ restart:
 				case Event::Gamepad:
 					{
 						const GamepadEvent* gev = static_cast<const GamepadEvent*>(ev);
+#if BX_PLATFORM_WIIU
+						inputSetGamepadConnected(gev->m_gamepad, gev->m_connected);
+#else
 						DBG("gamepad %d, %d", gev->m_gamepad.idx, gev->m_connected);
+#endif // BX_PLATFORM_WIIU
 					}
 					break;
 

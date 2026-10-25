@@ -94,6 +94,14 @@ void inputGetMouse(float _mouse[3]);
 bool inputIsMouseLocked();
 
 ///
+#if BX_PLATFORM_WIIU
+void inputSetGamepadConnected(entry::GamepadHandle _handle, bool _connected);
+
+///
+bool inputHasGamepad();
+
+///
+#endif // BX_PLATFORM_WIIU
 void inputSetGamepadAxis(entry::GamepadHandle _handle, entry::GamepadAxis::Enum _axis, int32_t _value);
 
 ///

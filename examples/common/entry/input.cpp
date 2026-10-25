@@ -169,6 +169,9 @@ struct Gamepad
 
 	void reset()
 	{
+#if BX_PLATFORM_WIIU
+		m_connected = false;
+#endif // BX_PLATFORM_WIIU
 		bx::memSet(m_axis, 0, sizeof(m_axis) );
 	}
 
@@ -182,6 +185,9 @@ struct Gamepad
 		return m_axis[_axis];
 	}
 
+#if BX_PLATFORM_WIIU
+	bool m_connected;
+#endif // BX_PLATFORM_WIIU
 	int32_t m_axis[entry::GamepadAxis::Count];
 };
 
@@ -400,3 +406,19 @@ int32_t inputGetGamepadAxis(entry::GamepadHandle _handle, entry::GamepadAxis::En
 {
 	return s_input->m_gamepad[_handle.idx].getAxis(_axis);
 }
+#if BX_PLATFORM_WIIU
+
+void inputSetGamepadConnected(entry::GamepadHandle _handle, bool _connected)
+{
+	Gamepad& gamepad = s_input->m_gamepad[_handle.idx];
+	if (!_connected) gamepad.reset();
+	gamepad.m_connected = _connected;
+}
+
+bool inputHasGamepad()
+{
+	for (const Gamepad& gamepad : s_input->m_gamepad)
+		if (gamepad.m_connected) return true;
+	return false;
+}
+#endif // BX_PLATFORM_WIIU
