@@ -310,11 +310,17 @@ namespace bgfx { namespace gx2
 
 		~RendererContextGX2()
 		{
-			// SDL is still alive here. One shutdown drain covers live and retired storage.
-			destroyWindow(m_mainWindow);
-			for (FrameBuffer& fb : m_frameBuffers) destroyWindow(fb.window);
-			if (m_headlessContext) GX2SetContextState(NULL);
-			GX2DrawDone(); seal(); transferPublish(true);
+			queryWindows(m_mainWindow.swapChain);
+			if (m_context)
+			{
+				// One foreground shutdown drain covers live and retired storage.
+				destroyWindow(m_mainWindow);
+				for (FrameBuffer& fb : m_frameBuffers) destroyWindow(fb.window);
+				if (m_headlessContext) GX2SetContextState(NULL);
+				GX2DrawDone(); seal();
+			}
+			// An unavailable adapter has already drained GX2 before releasing foreground.
+			transferPublish(true);
 			for (Block* block : m_allocations)
 			{
 				MEMFreeToDefaultHeap(block->data);
@@ -2324,7 +2330,7 @@ namespace bgfx { namespace gx2
 		// drains callbacks after its one GPU drain and before allocations are freed.
 		void transferPublish(bool _shutdown = false)
 		{
-			OSTime completed = GX2GetRetiredTimeStamp();
+			OSTime completed = _shutdown ? INT64_MAX : GX2GetRetiredTimeStamp();
 			for (TransferOutput& output : m_transferOutputs)
 			{
 				const bool due = output.kind == TransferOutput::TextureRead
