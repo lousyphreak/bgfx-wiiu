@@ -1141,7 +1141,7 @@ namespace bgfx { namespace gx2
 						bimg::imageDecodeToBgra8(g_allocator, dst, src, width, height, dstPitch, requested);
 				}
 				else
-					bimg::imageConvert(dst, 32, bimg::getPack(bimg::TextureFormat::BGRA8), src, sourceInfo.bitsPerPixel, bimg::getUnpack(requested), rect.m_width, rect.m_height, 1, srcPitch, dstPitch);
+					bimg::imageConvert(g_allocator, dst, bimg::TextureFormat::BGRA8, src, requested, rect.m_width, rect.m_height, 1, srcPitch, dstPitch);
 				bx::free(g_allocator, packed);
 			}
 			Rect merged = rect;
