@@ -2210,7 +2210,10 @@ namespace bgfx { namespace gx2
 			Window* window = windowFor(_handle);
 			if (!window || !window->target.color) return false;
 			prepareWindow(*window); resolveWindow(*window);
-			const GX2ColorBuffer& color = window->target.color->surface.image ? *window->target.color : windowColor(*window);
+			// Screenshot-only windows still consume their owned color/AA storage.
+			if (window->colorImage) touch(window->colorImage);
+			if (window->auxiliary) touch(window->auxiliary);
+			const GX2ColorBuffer& color = ownsWindowColor(*window) ? windowColor(*window) : *window->target.color;
 			_surface = color.surface; _mip = color.viewMip; _slice = color.viewFirstSlice;
 			if (window->swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER) _surface.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
 			_format = TextureFormat::RGBA8;
@@ -3334,6 +3337,11 @@ namespace bgfx { namespace gx2
 			_window.target = {}; _window.used = false; _window.swapChain.nwh = NULL;
 		}
 
+		bool ownsWindowColor(const Window& _window)
+		{
+			return ((const Gx2PlatformData*)_window.swapChain.nwh)->presentColor != NULL;
+		}
+
 		GX2ColorBuffer& windowColor(Window& _window)
 		{
 			return _window.colorImage ? _window.color : *_window.target.color;
@@ -3384,7 +3392,7 @@ namespace bgfx { namespace gx2
 			const uint32_t width = bx::max(1u, borrowed.surface.width >> borrowed.viewMip);
 			const uint32_t height = bx::max(1u, borrowed.surface.height >> borrowed.viewMip);
 			prepareWindowDepth(_window, width, height, aa);
-			if (!borrowed.surface.image || aa != borrowed.surface.aa)
+			if (ownsWindowColor(_window) || aa != borrowed.surface.aa)
 			{
 				GX2ColorBuffer& color = _window.color;
 				if (!_window.colorImage || color.surface.width != width || color.surface.height != height
@@ -3457,7 +3465,7 @@ namespace bgfx { namespace gx2
 			if (!_window.colorDirty) return;
 			GX2ColorBuffer& source = windowColor(_window);
 			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, source.surface.image, source.surface.imageSize);
-			if (_window.colorImage && _window.target.color->surface.image)
+			if (_window.colorImage && !ownsWindowColor(_window))
 			{
 				GX2ColorBuffer& target = *_window.target.color;
 				GX2ColorBuffer color = source; GX2Surface destination = target.surface;

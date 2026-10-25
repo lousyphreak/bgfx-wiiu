@@ -86,7 +86,8 @@ namespace bgfx
 		bool (*query)(void* userData, Gx2Target* target);
 		void (*present)(void* userData);
 		// Optional direct scanout from a bgfx-owned color buffer. With this hook,
-		// query may return a layout-only color descriptor (surface.image == NULL).
+		// the host color describes layout only; any host image remains host-owned.
+		// A layout-only descriptor with surface.image == NULL is also valid.
 		// The host retains scan-buffer ownership and resolves MSAA during its copy.
 		void (*presentColor)(void* userData, const GX2ColorBuffer* color) = NULL;
 		// Called after the host's foreground GPU drain, before its heap is freed.
