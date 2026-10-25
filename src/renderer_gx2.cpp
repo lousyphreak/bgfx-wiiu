@@ -41,14 +41,19 @@ namespace bgfx { namespace gx2
 		}
 	}
 
+	static void prepareCpuOverwrite(void* _data, uint32_t _bytes)
+	{
+		uint8_t* data = (uint8_t*)_data;
+		// Partial cache blocks retain their surrounding CPU-written bytes.
+		const uint32_t head = uint32_t(-uintptr_t(data)) & 31;
+		if (_bytes >= head+32) DCZeroRange(data+head, (_bytes-head) & ~31u);
+	}
+
 	static void copyTextureRow(void* _dst, const void* _src, uint32_t _bytes, uint8_t _swapWordSize)
 	{
 		uint8_t* dst = (uint8_t*)_dst;
 		const uint8_t* src = (const uint8_t*)_src;
-		// Allocate only complete CPU cache blocks covered by this overwrite.
-		// Partial edge blocks retain their surrounding CPU-written bytes.
-		const uint32_t head = uint32_t(-uintptr_t(dst)) & 31;
-		if (_bytes >= head+32) DCZeroRange(dst+head, (_bytes-head) & ~31u);
+		if (_swapWordSize > 1) prepareCpuOverwrite(dst, _bytes);
 		switch (_swapWordSize)
 		{
 		case 2:
@@ -66,7 +71,14 @@ namespace bgfx { namespace gx2
 				bx::storeUnaligned(dst+ii, bx::endianSwap(bx::loadUnaligned<uint32_t>(src+ii)));
 			break;
 		default:
-			bx::memCopy(dst, src, _bytes);
+			// Keep preparation close to the copy, even for multi-megabyte buffers.
+			while (_bytes)
+			{
+				const uint32_t bytes = bx::min(_bytes, 3u*1024);
+				prepareCpuOverwrite(dst, bytes);
+				bx::memCopy(dst, src, bytes);
+				dst += bytes; src += bytes; _bytes -= bytes;
+			}
 			break;
 		}
 	}
