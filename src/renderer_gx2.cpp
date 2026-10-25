@@ -2170,11 +2170,11 @@ namespace bgfx { namespace gx2
 			return _texture.texture.surface;
 		}
 
-		GX2Surface transferDestination(Texture& _texture, uint8_t _mip, uint16_t _slice, uint16_t _count, const Rect& _rect)
+		GX2Surface transferDestination(Texture& _texture, uint8_t _mip, uint16_t _slice, uint16_t _count, const Rect& _rect, bool _preserveSource = false)
 		{
 			resolveTexture(_texture);
 			if (_texture.hiZ && !_texture.renderImage) retire(_texture.hiZ);
-			if (_texture.image && _texture.image->stamp > GX2GetRetiredTimeStamp())
+			if (_preserveSource && _texture.image && _texture.image->stamp > GX2GetRetiredTimeStamp())
 			{
 				Block* previous = _texture.image; GX2Surface source = _texture.texture.surface;
 				_texture.image = reuse(_texture.spareImages, previous->size, source.alignment, true); textureStorage(_texture, _texture.image);
@@ -2702,7 +2702,22 @@ namespace bgfx { namespace gx2
 			// Native resolve consumes compressed color/aux directly. Keep pending
 			// source expansion for a later multisample sampling consumer.
 			GX2Surface source = resolve ? src.texture.surface : transferSource(src, _blit.m_srcMip, _blit.m_srcZ, count);
-			GX2Surface destination = transferDestination(dst, _blit.m_dstMip, _blit.m_dstZ, count, {int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), _blit.m_width, _blit.m_height});
+			// Only a source alias requires an immutable old destination backing.
+			// Independent GPU writes are ordered after previous readers in the FIFO.
+			bool aliased = false;
+			if (dst.image)
+			{
+				const uint64_t begin = OSEffectiveToPhysical(uint32_t(uintptr_t(dst.image->data)));
+				auto overlaps = [&](const void* data, uint32_t size)
+				{
+					const uint64_t address = OSEffectiveToPhysical(uint32_t(uintptr_t(data)));
+					return begin < address+size && address < begin+dst.image->size;
+				};
+				aliased = overlaps(source.image, source.imageSize)
+					|| (source.mipmapSize && overlaps(source.mipmaps, source.mipmapSize));
+			}
+			GX2Surface destination = transferDestination(dst, _blit.m_dstMip, _blit.m_dstZ, count,
+				{int16_t(_blit.m_dstX), int16_t(_blit.m_dstY), _blit.m_width, _blit.m_height}, aliased);
 			// Raw copies preserve stored values across UNORM/sRGB views. Arithmetic
 			// resolves retain the source encoding for gamma-correct averaging.
 			if (!resolve) source.format = GX2SurfaceFormat(uint32_t(source.format) & ~0x400u);
