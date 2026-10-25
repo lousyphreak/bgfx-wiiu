@@ -45,6 +45,10 @@ namespace bgfx { namespace gx2
 	{
 		uint8_t* dst = (uint8_t*)_dst;
 		const uint8_t* src = (const uint8_t*)_src;
+		// Allocate only complete CPU cache blocks covered by this overwrite.
+		// Partial edge blocks retain their surrounding CPU-written bytes.
+		const uint32_t head = uint32_t(-uintptr_t(dst)) & 31;
+		if (_bytes >= head+32) DCZeroRange(dst+head, (_bytes-head) & ~31u);
 		switch (_swapWordSize)
 		{
 		case 2:
