@@ -19,6 +19,14 @@ namespace bgfx { namespace gx2
 	static constexpr uint32_t kTextureSamplers = BGFX_CONFIG_MAX_TEXTURE_SAMPLERS < 16 ? BGFX_CONFIG_MAX_TEXTURE_SAMPLERS : 16;
 	static constexpr uint32_t kColorTargets = BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS < 8 ? BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS : 8;
 
+	// Budget queued frames plus the frame being recorded, using ordinary draw sizes.
+	// Existing draw/latency limits shrink small builds without new configuration.
+	static constexpr uint32_t kBufferedDraws = BGFX_CONFIG_MAX_DRAW_CALLS < 768 ? BGFX_CONFIG_MAX_DRAW_CALLS : 768;
+	static constexpr uint32_t kListReservation = 256*1024;
+	static constexpr uint32_t kMaxUniformSnapshot = 2*64*1024;
+	static constexpr uint32_t kListRingSize = kListReservation + kBufferedDraws*256*(BGFX_CONFIG_MAX_FRAME_LATENCY+1);
+	static constexpr uint32_t kUniformRingSize = kMaxUniformSnapshot + kBufferedDraws*512*(BGFX_CONFIG_MAX_FRAME_LATENCY+1);
+
 	static void unsupported(const char* _operation)
 	{
 		BGFX_FATAL(false, Fatal::UnableToInitialize, "GX2: %s is not supported by the graphics backend.", _operation);
@@ -428,6 +436,12 @@ namespace bgfx { namespace gx2
 			const OSTime stamp = GX2GetLastSubmittedTimeStamp();
 			for (Block* block : m_touched) block->stamp = stamp;
 			m_touched.clear();
+			for (SubmissionRing* ring : { &m_lists, &m_uploads })
+				if (ring->head != ring->sealed)
+				{
+					ring->epochs.push_back({ ring->head, stamp });
+					ring->sealed = ring->head;
+				}
 			return stamp;
 		}
 
@@ -439,7 +453,7 @@ namespace bgfx { namespace gx2
 			{
 				endGpuTimer(m_frameGpuTimer); m_frameGpuTimer = UINT32_MAX;
 			}
-			if (!present && !m_touched.empty())
+			if (!present && (!m_touched.empty() || m_lists.head != m_lists.sealed || m_uploads.head != m_uploads.sealed))
 			{
 				GX2Flush(); seal();
 			}
@@ -475,24 +489,49 @@ namespace bgfx { namespace gx2
 			m_presentCursor = (m_presentCursor+1)%kQueuedFrames;
 		}
 
-		Block* acquire(std::vector<Block*>& _pool, uint32_t _size, bool _displayList = false)
+		uint32_t acquire(SubmissionRing& _ring, uint32_t _size)
 		{
-			const OSTime completed = GX2GetRetiredTimeStamp();
-			for (Block* block : _pool)
-				if (block->stamp <= completed && block->size >= _size) return block;
-			if (_pool.size() >= 16)
+			if (!_ring.block)
 			{
-				GX2Flush(); seal();
-				Block* oldest = *std::min_element(_pool.begin(), _pool.end(), [](Block* a, Block* b) { return a->stamp < b->stamp; });
-				// A timed-out wait is not permission to overwrite GPU-owned bytes.
-				while (!GX2WaitTimeStamp(oldest->stamp)) {}
-				return oldest;
+				_ring.block = allocate(&_ring == &m_lists ? kListRingSize : kUniformRingSize, 256);
+				_ring.epochs.reserve(BGFX_CONFIG_MAX_FRAME_LATENCY*2);
+				// Display-list payloads are subsequently written only by write-gather.
+				if (&_ring == &m_lists) DCFlushRange(_ring.block->data, _ring.block->size);
 			}
-			Block* block = allocate(_size, 256);
-			// List payloads are only written through write-gather, including on reuse.
-			if (_displayList) DCFlushRange(block->data, block->size);
-			_pool.push_back(block);
-			return block;
+			const uint32_t capacity = _ring.block->size;
+			const uint32_t offset = uint32_t(_ring.head%capacity);
+			const bool wrap = capacity-offset < _size;
+			const uint64_t start = _ring.head + (wrap ? capacity-offset : 0);
+			if (start+_size > _ring.tail+capacity)
+			{
+				auto reclaim = [&]()
+				{
+					const OSTime completed = GX2GetRetiredTimeStamp();
+					auto end = _ring.epochs.begin();
+					while (end != _ring.epochs.end() && end->stamp <= completed)
+					{
+						_ring.tail = end->end;
+						++end;
+					}
+					_ring.epochs.erase(_ring.epochs.begin(), end);
+					// An empty ring can skip its unused tail without a GPU epoch.
+					if (_ring.tail == _ring.head) _ring.tail = start;
+				};
+				reclaim();
+				if (start+_size > _ring.tail+capacity)
+				{
+					// Publish queued ranges before waiting; never overwrite live bytes.
+					GX2Flush(); seal();
+					do
+					{
+						const OSTime stamp = _ring.epochs.front().stamp;
+						while (!GX2WaitTimeStamp(stamp)) {}
+						reclaim();
+					} while (start+_size > _ring.tail+capacity);
+				}
+			}
+			_ring.head = start;
+			return wrap ? 0 : offset;
 		}
 
 		Block* reuse(std::vector<Block*>& _spare, uint32_t _size, uint32_t _alignment = 64, bool _gpuDestination = false)
@@ -2852,37 +2891,40 @@ namespace bgfx { namespace gx2
 
 		}
 
-		void beginBatch()
+		void beginBatch(uint32_t _uniformBytes = 0)
 		{
-			m_list = acquire(m_lists, 256*1024, true);
-			// Two native 64 KiB uniform blocks are the largest single snapshot.
-			m_upload = acquire(m_uploads, 2*64*1024);
-			touch(m_list); touch(m_upload);
+			m_listOffset = acquire(m_lists, kListReservation);
+			m_uploadOffset = acquire(m_uploads, _uniformBytes);
 			m_uploadUsed = 0;
 			m_batchDraws = 0;
-			GX2BeginDisplayListEx(m_list->data, m_list->size, TRUE);
+			GX2BeginDisplayListEx((uint8_t*)m_lists.block->data+m_listOffset, kListReservation, TRUE);
 		}
 
 		void endBatch()
 		{
-			const uint32_t bytes = GX2EndDisplayList(m_list->data);
+			void* listData = (uint8_t*)m_lists.block->data+m_listOffset;
+			const uint32_t bytes = GX2EndDisplayList(listData);
 			if (m_uploadUsed)
 			{
-				// Publish all populated uniform spans together, then invalidate the GPU reader.
+				// Publish populated spans only; other ring ranges can still be in flight.
 				OSMemoryBarrier();
-				GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, m_upload->data, m_uploadUsed);
+				GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, (uint8_t*)m_uploads.block->data+m_uploadOffset, m_uploadUsed);
 			}
-			// Empty batches contain no command stream for the native indirect-buffer packet.
-			if (bytes) GX2CallDisplayList(m_list->data, bytes);
+			if (bytes) GX2CallDisplayList(listData, bytes);
+			m_lists.head += bx::alignUp(bytes, 64);
+			m_uploads.head += m_uploadUsed;
 		}
 
 		// Clears share the existing draw-command budget; neither path can fill a
 		// list with an unbounded run of commands that consumes no uniform bytes.
 		void reserveBatch(uint32_t _operations, uint32_t _uniformBytes)
 		{
-			if (m_batchDraws+_operations > 32 || m_uploadUsed+_uniformBytes > m_upload->size)
+			const uint32_t capacity = m_uploads.block->size;
+			if (m_batchDraws+_operations > 32
+			|| m_uploadOffset+m_uploadUsed+_uniformBytes > capacity
+			|| m_uploads.head+m_uploadUsed+_uniformBytes > m_uploads.tail+capacity)
 			{
-				endBatch(); beginBatch();
+				endBatch(); beginBatch(_uniformBytes);
 			}
 			m_batchDraws += _operations;
 		}
@@ -2894,7 +2936,7 @@ namespace bgfx { namespace gx2
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
-				m_stageData[stage] = (uint8_t*)m_upload->data + m_uploadUsed;
+				m_stageData[stage] = (uint8_t*)m_uploads.block->data + m_uploadOffset + m_uploadUsed;
 				// A fresh snapshot has no CPU contents to preserve. dcbz allocates its
 				// cache blocks without fetching the previous GPU-only bytes from MEM2.
 				if (shader.uniformSize) DCZeroRange(m_stageData[stage], shader.uniformSize);
@@ -4639,10 +4681,10 @@ namespace bgfx { namespace gx2
 		uint32_t m_targetWidth = 0, m_targetHeight = 0;
 		uint32_t m_numColors = 0, m_colorWritten = 0;
 		bool m_hasDepth = false, m_depthReadOnly = false, m_stencilReadOnly = false, m_depthWritten = false;
-		std::vector<Block*> m_allocations, m_touched, m_retired, m_lists, m_uploads;
+		std::vector<Block*> m_allocations, m_touched, m_retired;
+		SubmissionRing m_lists, m_uploads;
 		std::vector<Texture*> m_pendingTextures;
-		Block* m_list = NULL;
-		Block* m_upload = NULL;
+		uint32_t m_listOffset = 0, m_uploadOffset = 0;
 		uint32_t m_uploadUsed = 0;
 		uint32_t m_batchDraws = 0;
 		uint8_t* m_stageData[2];

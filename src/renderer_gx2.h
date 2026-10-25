@@ -41,6 +41,14 @@ namespace bgfx { namespace gx2
 		OSTime stamp = 0;
 	};
 
+	struct SubmissionRing
+	{
+		struct Epoch { uint64_t end; OSTime stamp; };
+		Block* block = NULL;
+		uint64_t head = 0, tail = 0, sealed = 0;
+		std::vector<Epoch> epochs;
+	};
+
 	struct OcclusionSample
 	{
 		Block* block;
