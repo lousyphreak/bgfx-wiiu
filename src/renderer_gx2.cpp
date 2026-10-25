@@ -1898,6 +1898,16 @@ namespace bgfx { namespace gx2
 			return block;
 		}
 
+		void rasterSamples(bool _multisample, bool _sampleFrequency = false)
+		{
+			// Keep GX2's scheduler baseline; change only MSAA_ENABLE and PS_ITER_SAMPLE.
+			const uint32_t mode = 0x14000 | (_multisample ? 1 : 0) | (_sampleFrequency ? 0x20000 : 0);
+			if (mode == m_rasterMode) return;
+			alignas(64) const uint32_t registers[] = {0xc0016900, 0x293, mode};
+			GX2CopyDisplayList(registers, sizeof(registers));
+			m_rasterMode = mode;
+		}
+
 		void fullscreen(Program& _program, const GX2Texture& _source, GX2ColorBuffer* _color, GX2DepthBuffer* _depth, uint32_t _width, uint32_t _height, const float* _params = NULL, const GX2Texture* _stencil = NULL, const Rect* _rect = NULL, bool _sampleFrequency = false)
 		{
 			if (_color) GX2SetColorBuffer(_color, GX2_RENDER_TARGET_0);
@@ -1924,13 +1934,9 @@ namespace bgfx { namespace gx2
 			if (_params) updateUniform(m_uniformReg.find("u_mipGen")->m_handle.idx, _params, 16);
 			uniformsBegin(_program); uniformsEnd(_program);
 			RenderDraw draw; draw.clear(); draw.m_streamMask = 0; vertexInput(_program, draw);
-			// Retail GX2 initializes PA_SC_MODE_CNTL to 0x14001. Its AA setter
-			// changes sample locations/count, but never PS_ITER_SAMPLE (bit 17).
-			alignas(64) static const uint32_t sampleFrequency[] = {0xc0016900, 0x293, 0x34001};
-			alignas(64) static const uint32_t pixelFrequency[] = {0xc0016900, 0x293, 0x14001};
-			if (_sampleFrequency) GX2CopyDisplayList(sampleFrequency, sizeof(sampleFrequency));
+			rasterSamples(true, _sampleFrequency);
 			GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, 3, 0, 1);
-			if (_sampleFrequency) GX2CopyDisplayList(pixelFrequency, sizeof(pixelFrequency));
+			if (_sampleFrequency) rasterSamples(true);
 		}
 
 		void resolveDepth(Texture& _texture, const RenderView& _view)
@@ -2701,6 +2707,7 @@ namespace bgfx { namespace gx2
 			GX2SetLineWidth(1.0f); GX2SetPointLimits(1.0f, 255.0f);
 			m_depthControl = {};
 			GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
+			m_rasterMode = UINT32_MAX; rasterSamples(true);
 			m_cachedState = UINT64_MAX;
 			m_cachedStencil = UINT64_MAX;
 			m_cachedRgba = UINT32_MAX;
@@ -2964,6 +2971,11 @@ namespace bgfx { namespace gx2
 		{
 			if (_state & BGFX_STATE_CONSERVATIVE_RASTER) unsupported("conservative raster");
 			const bool invalid = m_cachedState == UINT64_MAX;
+			const bool multisample = 0 != (_state & BGFX_STATE_MSAA);
+			const GX2PixelShader& fragment = *(const GX2PixelShader*)m_boundProgram->fragment->header->data;
+			// CafeGLSL uses the fixed-point-position system input for SampleID
+			// and its sample-qualified coverage-mask input.
+			rasterSamples(multisample, multisample && 0 != (fragment.regs.spi_ps_in_control_1 & 0x01000000));
 			if (_state != m_cachedState || _stencil != m_cachedStencil || _wireframe != m_wireframe || ((_state & BGFX_STATE_BLEND_INDEPENDENT) && _rgba != m_cachedRgba))
 			{
 				const uint32_t front = unpackStencil(0, _stencil);
@@ -3417,6 +3429,7 @@ namespace bgfx { namespace gx2
 					GX2SetColorControl(GX2_LOGIC_OP_COPY, 0, FALSE, TRUE); channelMasks(15, 1);
 					GX2SetAlphaToMask(FALSE, GX2_ALPHA_TO_MASK_MODE_NON_DITHERED);
 					GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
+			m_rasterMode = UINT32_MAX; rasterSamples(true);
 					const float depth[4] = {clear.m_depth, 0, 0, 0}; updateUniform(depthUniform->m_handle.idx, depth, 16);
 					for (uint32_t ii = 0; ii < m_numColors; ++ii)
 						if (integerMask & (1u << ii))
@@ -3445,6 +3458,7 @@ namespace bgfx { namespace gx2
 						clear.m_flags & BGFX_CLEAR_STENCIL ? stencil : 0, 0);
 					channelMasks(15, floatMask);
 					GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX;
+			m_rasterMode = UINT32_MAX; rasterSamples(true);
 					GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, 0, 1);
 				}
 				viewport(_view); m_cachedState = UINT64_MAX;
@@ -4183,6 +4197,7 @@ namespace bgfx { namespace gx2
 		TextVideoMem m_statsText;
 		bool m_wireframe = false;
 		DepthControl m_depthControl = {};
+		uint32_t m_rasterMode = UINT32_MAX;
 		uint32_t m_sampleMask = UINT32_MAX;
 		uint64_t m_cachedState, m_cachedStencil;
 		uint32_t m_cachedRgba;
