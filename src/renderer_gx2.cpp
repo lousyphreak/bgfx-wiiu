@@ -3399,6 +3399,16 @@ namespace bgfx { namespace gx2
 			GX2SetViewport(rect.m_x, rect.m_y, rect.m_width, rect.m_height, 2*_view.m_minDepth-_view.m_maxDepth, _view.m_maxDepth);
 		}
 
+		void depthClearValues(Texture& _texture, const GX2DepthBuffer& _depth)
+		{
+			_texture.depthClear = _depth.depthClear; _texture.stencilClear = _depth.stencilClear;
+			if (_texture.external && _texture.external->depth)
+			{
+				_texture.external->depth->depthClear = _depth.depthClear;
+				_texture.external->depth->stencilClear = _depth.stencilClear;
+			}
+		}
+
 		void clear(const View& _view, const ClearQuad& _quad, const float _palette[][4])
 		{
 			const Clear& clear = _view.m_clear;
@@ -3452,13 +3462,12 @@ namespace bgfx { namespace gx2
 						{
 							Texture& texture = m_textures[attachment.handle.idx];
 							if (!bimg::isDepth(bimg::TextureFormat::Enum(texture.format))) continue;
-							if (depthFlags & GX2_CLEAR_FLAGS_DEPTH) texture.depthClear = clear.m_depth;
-							if (depthFlags & GX2_CLEAR_FLAGS_STENCIL) texture.stencilClear = clear.m_stencil;
+							depthClearValues(texture, m_activeDepth);
 						}
 					else if (isValid(window->swapChain.depth))
 					{
 						Texture& texture = m_textures[window->swapChain.depth.idx];
-						texture.depthClear = m_activeDepth.depthClear; texture.stencilClear = m_activeDepth.stencilClear;
+						depthClearValues(texture, m_activeDepth);
 					}
 					else window->depth = m_activeDepth;
 				}

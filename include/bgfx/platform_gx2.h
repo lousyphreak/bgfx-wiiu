@@ -27,7 +27,9 @@ namespace bgfx
 	/// Imported render storage is authoritative at creation and already published
 	/// by the caller. bgfx manages transitions for its own subsequent commands.
 	/// Caller writes require its own GPU ordering/publication before bgfx consumes
-	/// them; these descriptors are immutable while the bgfx texture exists.
+	/// them. Allocation/view metadata is immutable while the texture exists;
+	/// bgfx updates the supplied depth descriptor's clear values after full clears
+	/// so native users can later restore the matching Hi-Z clear registers.
 	/// Layered depth and shared texture/depth storage must be expanded without
 	/// Hi-Z before import. bgfx keeps Hi-Z disabled there; native writes to shared
 	/// storage cannot update separate Hi-Z metadata. Separate single-layer depth
@@ -36,7 +38,7 @@ namespace bgfx
 	{
 		const GX2Texture* texture;
 		const GX2ColorBuffer* color;
-		const GX2DepthBuffer* depth;
+		GX2DepthBuffer* depth;
 
 		uint64_t getHandle() const { return uint64_t(uintptr_t(this)) | 1; }
 	};
