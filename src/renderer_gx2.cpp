@@ -2835,8 +2835,9 @@ namespace bgfx { namespace gx2
 			const uint32_t bytes = GX2EndDisplayList(m_list->data);
 			if (m_uploadUsed)
 			{
-				DCFlushRange(m_upload->data, m_uploadUsed);
-				GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, NULL, UINT32_MAX);
+				// Publish all populated uniform spans together, then invalidate the GPU reader.
+				OSMemoryBarrier();
+				GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, m_upload->data, m_uploadUsed);
 			}
 			// Empty batches contain no command stream for the native indirect-buffer packet.
 			if (bytes) GX2CallDisplayList(m_list->data, bytes);
@@ -2890,6 +2891,13 @@ namespace bgfx { namespace gx2
 
 		void uniformsEnd(Program& _program)
 		{
+			// Snapshots are complete here. Do not walk the 256-byte alignment holes or
+			// evict CPU cache lines; endBatch supplies one publication barrier for all.
+			for (uint32_t stage = 0; stage < 2; ++stage)
+			{
+				const uint32_t size = (stage ? _program.fragment : _program.vertex)->uniformSize;
+				if (size) DCStoreRangeNoSync(m_stageData[stage], size);
+			}
 			if (_program.vertex->uniformSize) GX2SetVertexUniformBlock(0, _program.vertex->uniformSize, m_stageData[0]);
 			if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
 			if (m_boundProgram != &_program)
