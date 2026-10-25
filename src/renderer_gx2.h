@@ -170,8 +170,8 @@ namespace bgfx { namespace gx2
 	{
 		GX2Texture texture = {};
 		// Ordinary draws read this prefix; conversion, staging and alias data follow.
-		uint64_t flags = 0;
 		Block* image = NULL;
+		uint64_t flags = 0;
 		TextureFormat::Enum format = TextureFormat::Unknown;
 		TextureFormat::Enum requestedFormat = TextureFormat::Unknown;
 		std::vector<RenderView> rendered;
