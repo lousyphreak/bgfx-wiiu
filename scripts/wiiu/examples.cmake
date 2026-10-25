@@ -126,10 +126,6 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         # The example selects its original nonadaptive quality levels on GX2.
         list(FILTER shader_sources EXCLUDE REGEX "cs_assao_postprocess_importance_map_b\\.sc$")
     endif()
-    if(example STREQUAL "21-deferred")
-        # The original application gates UAV programs on IMAGE_RW, absent on GX2.
-        list(FILTER shader_sources EXCLUDE REGEX "_uav\\.sc$")
-    endif()
     if(example MATCHES "^(05-instancing|22-windows|26-occlusion|34-mvs|35-dynamic|50-headless)$")
         list(APPEND shader_sources
             "${BGFX_DIR}/examples/01-cubes/vs_cubes.sc"

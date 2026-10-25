@@ -266,7 +266,7 @@ namespace bgfx { namespace gx2
 				GX2SetupContextStateEx(m_headlessContext, TRUE);
 				m_context = m_headlessContext;
 			}
-			g_caps.supported = BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY | BGFX_CAPS_PRIMITIVE_ID;
+			g_caps.supported = BGFX_CAPS_IMAGE_RW | BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY | BGFX_CAPS_PRIMITIVE_ID;
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -909,8 +909,7 @@ namespace bgfx { namespace gx2
 			shader.compute = isShaderType(magic, 'C');
 			readLE(ptr, 4); readLE(ptr, 4); // interface hashes
 			shader.rawSrvMask = readLE(ptr, 4);
-			const uint32_t uavMask = readLE(ptr, 4);
-			if (uavMask && !shader.compute) unsupported("writable graphics shader buffers");
+			readLE(ptr, 4); // Writable bindings are described by the resource layout below.
 			const uint16_t count = uint16_t(readLE(ptr, 2));
 			for (uint32_t ii = 0; ii < count; ++ii)
 			{
@@ -943,10 +942,10 @@ namespace bgfx { namespace gx2
 					shader.uniforms.push_back(uniform);
 				}
 			}
-			if (shader.compute)
+			uint32_t gfdSize = readLE(ptr, 4);
+			if (shader.compute || gfdSize == UINT32_C(0x31495347))
 			{
-				const uint32_t signature = readLE(ptr, 4);
-				BGFX_FATAL(signature == UINT32_C(0x31435347), Fatal::InvalidShader, "GX2 compute resource ABI must be GSC1.");
+				BGFX_FATAL(gfdSize == (shader.compute ? UINT32_C(0x31435347) : UINT32_C(0x31495347)), Fatal::InvalidShader, "Invalid GX2 resource ABI.");
 				const uint32_t resources = readLE(ptr, 4);
 				for (uint32_t ii = 0; ii < resources; ++ii)
 				{
@@ -956,8 +955,8 @@ namespace bgfx { namespace gx2
 					resource.read = readLE(ptr, 4); resource.write = readLE(ptr, 4);
 					shader.resources.push_back(resource);
 				}
+				gfdSize = readLE(ptr, 4);
 			}
-			const uint32_t gfdSize = readLE(ptr, 4);
 			// The envelope is byte-packed; GFD reads native words and needs alignment.
 			void* gfd = bx::alloc(g_allocator, gfdSize, 4);
 			bx::memCopy(gfd, ptr, gfdSize);
@@ -3588,6 +3587,181 @@ namespace bgfx { namespace gx2
 			return bx::alignUp(bytes, 256);
 		}
 
+		struct GraphicsImage
+		{
+			Binding binding;
+			ComputeOutput output;
+			// 0: canonical only, 1: matching export copy, 2: pending export writes,
+			// 3: published export writes not yet materialized in canonical storage.
+			uint8_t authority = 0;
+		};
+
+		struct GraphicsImages
+		{
+			std::vector<GraphicsImage> images;
+			Block* layout = NULL;
+			uint32_t params[128] = {};
+		};
+
+		GraphicsImage* graphicsImage(GraphicsImages& _images, const Binding& _bind)
+		{
+			for (GraphicsImage& image : _images.images)
+				if (image.binding.m_idx == _bind.m_idx && image.binding.m_firstMip == _bind.m_firstMip
+				&& image.binding.m_firstLayer == _bind.m_firstLayer && image.binding.m_numLayers == _bind.m_numLayers
+				&& image.binding.m_format == _bind.m_format) return &image;
+			return NULL;
+		}
+
+		uint32_t graphicsImageLayout(GraphicsImages& _images, const Program& _program, const RenderBind& _bind, uint32_t _bytes)
+		{
+			for (const Shader* shader : { _program.vertex, _program.fragment })
+				for (const ComputeResource& resource : shader->resources)
+				{
+					const Binding& bind = _bind.m_bind[resource.binding];
+					GraphicsImage* previous = graphicsImage(_images, bind);
+					if (previous)
+					{
+						if (!previous->output.size && (resource.read || resource.write))
+						{
+							previous->output.offset = bx::alignUp(_bytes, bx::max(256u, previous->output.surface.alignment));
+							previous->output.size = previous->output.surface.imageSize*previous->output.layers;
+							_bytes = previous->output.offset+previous->output.size;
+						}
+						continue;
+					}
+					GraphicsImage image; image.binding = bind;
+					const GX2Surface& surface = m_textures[bind.m_idx].texture.surface;
+					const uint32_t layers = surface.dim == GX2_SURFACE_DIM_TEXTURE_3D ? bx::max(1u, surface.depth >> bind.m_firstMip) : surface.depth;
+					image.output.layers = bx::min<uint32_t>(bind.m_numLayers, layers-bind.m_firstLayer);
+					image.output.elementBytes = resource.elementBytes;
+					image.output.surface = transferLinear(computeImageFormat(resource.format), bx::max(1u, surface.width >> bind.m_firstMip), bx::max(1u, surface.height >> bind.m_firstMip));
+					image.output.size = resource.read || resource.write ? image.output.surface.imageSize*image.output.layers : 0;
+					image.output.offset = image.output.size ? bx::alignUp(_bytes, bx::max(256u, image.output.surface.alignment)) : 0;
+					if (image.output.size) _bytes = image.output.offset+image.output.size;
+					_images.images.push_back(image);
+				}
+			return _bytes;
+		}
+
+		void graphicsImagePublish(GraphicsImage& _image, Block* _exports)
+		{
+			if (_image.authority != 2) return;
+			GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, (uint8_t*)_exports->data+_image.output.offset, _image.output.size);
+			_image.authority = 3;
+		}
+
+		// Caller ends the batch/pass before native copies; one copy per canonical
+		// consumer, never one copy per dependent UAV draw.
+		void graphicsImageStore(GraphicsImage& _image, Block* _exports)
+		{
+			if (_image.authority < 2) return;
+			graphicsImagePublish(_image, _exports);
+			const ComputeOutput& output = _image.output;
+			Texture& texture = m_textures[_image.binding.m_idx];
+			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, (uint8_t*)_exports->data+output.offset, output.size);
+			const bool convert = output.surface.format != texture.texture.surface.format;
+			if (convert) { restore(); beginBatch(); }
+			for (uint32_t layer = 0; layer < output.layers; ++layer)
+			{
+				GX2Surface source = output.surface;
+				source.image = (uint8_t*)_exports->data+output.offset+layer*source.imageSize;
+				if (convert) computeImageConvert(texture, _image.binding, source, layer, false);
+				else GX2CopySurface(&source, 0, 0, &texture.texture.surface, _image.binding.m_firstMip, _image.binding.m_firstLayer+layer);
+			}
+			if (convert) endBatch();
+			transferWritten(texture, _image.binding.m_firstMip, _image.binding.m_firstLayer, output.layers);
+			_image.authority = 1;
+		}
+
+		bool graphicsImagesConsume(GraphicsImages& _images, Block* _exports, uint16_t _texture = kInvalidHandle, bool _invalidate = false)
+		{
+			bool changed = false;
+			for (GraphicsImage& image : _images.images)
+			{
+				if (_texture != kInvalidHandle && image.binding.m_idx != _texture) continue;
+				if (image.authority >= 2)
+				{
+					if (!changed) { endBatch(); finishRenderPass(); changed = true; }
+					graphicsImageStore(image, _exports);
+				}
+				if (_invalidate) image.authority = 0;
+			}
+			if (changed) { restore(); bindFrameBuffer(m_currentFrameBuffer); beginBatch(); }
+			return changed;
+		}
+
+		bool graphicsImagesBind(GraphicsImages& _images, Block* _exports, const Program& _program, const RenderBind& _bind)
+		{
+			if (_images.images.empty()) return false;
+			bool restored = false;
+			// Sampled aliases consume canonical texture storage.
+			for (uint32_t unit = 0; unit < 16; ++unit)
+				if (_bind.m_bind[unit].m_idx != kInvalidHandle && _bind.m_bind[unit].m_type == Binding::Texture
+				&& (_program.vertex->samplerDimensions[unit] || _program.fragment->samplerDimensions[unit]))
+					restored |= graphicsImagesConsume(_images, _exports, _bind.m_bind[unit].m_idx);
+			if (_program.vertex->resources.empty() && _program.fragment->resources.empty()) return restored;
+			uint32_t params[128] = {};
+			bool copying = false;
+			for (const Shader* shader : { _program.vertex, _program.fragment })
+				for (const ComputeResource& resource : shader->resources)
+				{
+					const Binding& bind = _bind.m_bind[resource.binding];
+					GraphicsImage& image = *graphicsImage(_images, bind);
+					const ComputeOutput& output = image.output;
+					if (!image.authority && (resource.read || resource.write))
+					{
+						if (!copying) { endBatch(); finishRenderPass(); copying = true; }
+						// A different typed/subresource alias must first publish its writes.
+						for (GraphicsImage& alias : _images.images)
+							if (&alias != &image && alias.binding.m_idx == bind.m_idx) { graphicsImageStore(alias, _exports); alias.authority = 0; }
+						Texture& texture = m_textures[bind.m_idx]; resolveTexture(texture);
+						if (texture.image) touch(texture.image);
+						const bool convert = output.surface.format != texture.texture.surface.format;
+						if (convert) { restore(); beginBatch(); }
+						for (uint32_t layer = 0; layer < output.layers; ++layer)
+						{
+							GX2Surface dest = output.surface;
+							dest.image = (uint8_t*)_exports->data+output.offset+layer*dest.imageSize;
+							if (convert) computeImageConvert(texture, bind, dest, layer, true);
+							else GX2CopySurface(&texture.texture.surface, bind.m_firstMip, bind.m_firstLayer+layer, &dest, 0, 0);
+						}
+						if (convert) endBatch();
+						GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, (uint8_t*)_exports->data+output.offset, output.size);
+						image.authority = 1;
+					}
+					graphicsImagePublish(image, _exports);
+					uint32_t* entry = params+resource.binding*8;
+					entry[0] = bx::toLittleEndian(output.offset/4); entry[1] = bx::toLittleEndian(output.size/4);
+					entry[2] = bx::toLittleEndian(output.surface.pitch*output.elementBytes/4);
+					entry[3] = bx::toLittleEndian(output.surface.imageSize/4);
+					entry[4] = bx::toLittleEndian(output.surface.width); entry[5] = bx::toLittleEndian(output.surface.height);
+					entry[6] = bx::toLittleEndian(output.layers);
+				}
+			if (copying) { restore(); bindFrameBuffer(m_currentFrameBuffer); beginBatch(); restored = true; }
+			if (_exports && (m_boundExportData != _exports->data || m_boundExportSize != _exports->size))
+			{
+				endBatch(); bindComputeExports(_exports); beginBatch();
+			}
+			if (!_images.layout || bx::memCmp(params, _images.params, sizeof(params)))
+			{
+				retire(_images.layout);
+				_images.layout = allocate(sizeof(params), 256);
+				bx::memCopy(_images.layout->data, params, sizeof(params)); bx::memCopy(_images.params, params, sizeof(params));
+				GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), _images.layout->data, sizeof(params));
+			}
+			if (!_program.vertex->resources.empty()) GX2SetVertexUniformBlock(15, sizeof(params), _images.layout->data);
+			if (!_program.fragment->resources.empty()) GX2SetPixelUniformBlock(15, sizeof(params), _images.layout->data);
+			touch(_images.layout); if (_exports) touch(_exports);
+			return restored;
+		}
+
+		void graphicsImagesWritten(GraphicsImages& _images, const Program& _program, const RenderBind& _bind)
+		{
+			for (const Shader* shader : { _program.vertex, _program.fragment })
+				for (const ComputeResource& resource : shader->resources)
+					if (resource.write) graphicsImage(_images, _bind.m_bind[resource.binding])->authority = 2;
+		}
+
 		// Convert a CPU-owned raw buffer once, so every byte of its canonical
 		// allocation has one byte representation. Ownership stays in gpuWritten.
 		void computeBufferNative(Buffer& _buffer, bool _index)
@@ -4010,6 +4184,16 @@ namespace bgfx { namespace gx2
 					exportBytes = bx::max(exportBytes, bx::min(num, indirectChunk(indexed))*(indexed ? 96u : 80u));
 				}
 			}
+			GraphicsImages images;
+			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
+			{
+				SortKey key;
+				if (!key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
+				{
+					const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
+					if (draw.m_streamMask) exportBytes = graphicsImageLayout(images, m_programs[key.m_program.idx], _render->m_renderBind[draw.m_bindIdx], exportBytes);
+				}
+			}
 			Block* exports = exportBytes ? gpuBufferAllocate(exportBytes) : NULL;
 			if (exports) DCInvalidateRange(exports->data, exports->size);
 			BlitState blits(_render);
@@ -4029,6 +4213,10 @@ namespace bgfx { namespace gx2
 					view = key.m_view;
 					Window* window = windowFor(renderView.m_fbh);
 					if (window) window->used = true;
+					if (blits.hasItem(view)) graphicsImagesConsume(images, exports, kInvalidHandle, true);
+					if (isValid(renderView.m_fbh) && !windowFor(renderView.m_fbh))
+						for (const Attachment& attachment : m_frameBuffers[renderView.m_fbh.idx].attachments)
+							graphicsImagesConsume(images, exports, attachment.handle.idx, true);
 					transferBlits(blits, view);
 					if (m_currentFrameBuffer.idx != renderView.m_fbh.idx)
 					{
@@ -4051,6 +4239,8 @@ namespace bgfx { namespace gx2
 						rendererUpdateUniforms(this, _render->m_uniformBuffer[dispatch.m_uniformIdx], dispatch.m_uniformBegin, dispatch.m_uniformEnd);
 					if (_render->m_debug & BGFX_DEBUG_IFH) continue;
 					endBatch(); finishRenderPass();
+					graphicsImagesConsume(images, exports, kInvalidHandle, true);
+					endBatch();
 					bindComputeExports(exports);
 					dispatchCompute(m_programs[key.m_program.idx], dispatch, _render->m_renderBind[dispatch.m_bindIdx], exports, _render->m_colorPalette, viewState, _render, view, renderView);
 					++stats.numCompute;
@@ -4102,6 +4292,7 @@ namespace bgfx { namespace gx2
 					restore(); bindFrameBuffer(m_currentFrameBuffer); viewport(renderView); beginBatch();
 				}
 				Program& program = m_programs[key.m_program.idx];
+				if (graphicsImagesBind(images, exports, program, _render->m_renderBind[draw.m_bindIdx])) viewport(renderView);
 				if (prepareTextures(_render->m_renderBind[draw.m_bindIdx], program)) viewport(renderView);
 				GX2SetScissor(scissor.m_x, scissor.m_y, scissor.m_width, scissor.m_height);
 				uniformsBegin(program);
@@ -4169,10 +4360,13 @@ namespace bgfx { namespace gx2
 							}
 					GX2DrawEx(primitive, count, 0, draw.m_numInstances);
 				}
+				graphicsImagesWritten(images, program, _render->m_renderBind[draw.m_bindIdx]);
 				if (occlusion) endOcclusion(occlusion);
 				static const uint8_t divisor[] = {3, 1, 2, 1, 1}, subtract[] = {0, 2, 0, 1, 0};
 				stats.numPrims[topology] += (count/divisor[topology] > subtract[topology] ? count/divisor[topology]-subtract[topology] : 0)*draw.m_numInstances;
 			}
+			graphicsImagesConsume(images, exports);
+			retire(images.layout);
 			retire(exports);
 			endViewTimer(_render, viewTimer);
 			endBatch(); finishRenderPass(); transferRemainingBlits(blits);

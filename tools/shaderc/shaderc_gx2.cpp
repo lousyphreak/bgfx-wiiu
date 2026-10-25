@@ -107,7 +107,7 @@ namespace bgfx
 
 		template<typename Shader>
 		bool writeStage(const Options& _options, const Shader& _shader, const std::string& _code,
-			const std::vector<uint8_t>& _gfd, bx::WriterI* _writer, bx::WriterI* _messages, const GLSLComputeShader* _compute = NULL)
+			const std::vector<uint8_t>& _gfd, bx::WriterI* _writer, bx::WriterI* _messages, const GLSLShaderResources* _resources = NULL, bool _compute = false)
 		{
 			bx::ErrorAssert err;
 			UniformArray uniforms;
@@ -227,12 +227,12 @@ namespace bgfx
 					raw.srv |= 1u << uint32_t(strtoul(match[1].str().c_str(), NULL, 10));
 				}
 			}
-			else
+			if (_resources)
 			{
-				for (uint32_t ii = 0; ii < _compute->resourceCount; ++ii)
+				for (uint32_t ii = 0; ii < _resources->resourceCount; ++ii)
 				{
-					const GLSLComputeResource& resource = _compute->resources[ii];
-					if (resource.read) raw.srv |= 1u << resource.binding;
+					const GLSLComputeResource& resource = _resources->resources[ii];
+					if (resource.read && _compute) raw.srv |= 1u << resource.binding;
 					if (resource.write) raw.uav |= 1u << resource.binding;
 				}
 			}
@@ -250,14 +250,14 @@ namespace bgfx
 				bx::write(_writer, uniform.texDimension, &err);
 				bx::writeLE(_writer, uniform.texFormat, &err);
 			}
-			if (_compute)
+			if (_compute || (_resources && _resources->resourceCount))
 			{
-				// Compute-only ABI extension before the native GFD payload.
-				bx::writeLE(_writer, uint32_t(0x31435347), &err); // GSC1
-				bx::writeLE(_writer, _compute->resourceCount, &err);
-				for (uint32_t ii = 0; ii < _compute->resourceCount; ++ii)
+				// Optional graphics/compute resource layout before the native GFD payload.
+				bx::writeLE(_writer, uint32_t(_compute ? 0x31435347 : 0x31495347), &err); // GSC1 / GSI1
+				bx::writeLE(_writer, _resources->resourceCount, &err);
+				for (uint32_t ii = 0; ii < _resources->resourceCount; ++ii)
 				{
-					const GLSLComputeResource& r = _compute->resources[ii];
+					const GLSLComputeResource& r = _resources->resources[ii];
 					bx::writeLE(_writer, r.binding, &err);
 					bx::writeLE(_writer, r.kind, &err);
 					bx::writeLE(_writer, r.format, &err);
@@ -308,13 +308,17 @@ namespace bgfx
 			if (mode == GLSL_SHADER_MODE_ERROR) return false;
 			GFDFile file;
 			file.computeShaders.push_back(&compute->shader);
-			return writeStage(_options, compute->shader, declarations, SerializeGFD(file), _writer, _messages, compute);
+			GLSLShaderResources resources{};
+			resources.resourceCount = compute->resourceCount;
+			bx::memCopy(resources.resources, compute->resources, sizeof(resources.resources));
+			return writeStage(_options, compute->shader, declarations, SerializeGFD(file), _writer, _messages, &resources, true);
 		}
 		GX2VertexShader* vertex = NULL;
 		GX2PixelShader* pixel = NULL;
+		GLSLShaderResources resources{};
 		const GX2ShaderMode mode = _options.shaderType == 'v'
-			? CompileVertexShader(_code.c_str(), GLSL_COMPILE_BLOCK, &vertex, diagnostics, sizeof(diagnostics), flags)
-			: CompilePixelShader(_code.c_str(), GLSL_COMPILE_BLOCK, &pixel, diagnostics, sizeof(diagnostics), flags);
+			? CompileVertexShaderEx(_code.c_str(), GLSL_COMPILE_BLOCK, &vertex, diagnostics, sizeof(diagnostics), flags, &resources)
+			: CompilePixelShaderEx(_code.c_str(), GLSL_COMPILE_BLOCK, &pixel, diagnostics, sizeof(diagnostics), flags, &resources);
 		std::unique_ptr<GX2VertexShader, decltype(&FreeVertexShader)> vs(vertex, FreeVertexShader);
 		std::unique_ptr<GX2PixelShader, decltype(&FreePixelShader)> fs(pixel, FreePixelShader);
 		bx::ErrorAssert err;
@@ -325,7 +329,7 @@ namespace bgfx
 		{
 			GX2VertexShader* alternate = NULL;
 			const GLSL_COMPILER_FLAG variantFlags = GLSL_COMPILER_FLAG(flags | GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
-			const GX2ShaderMode variantMode = CompileVertexShader(_code.c_str(), GLSL_COMPILE_BLOCK, &alternate, diagnostics, sizeof(diagnostics), variantFlags);
+			const GX2ShaderMode variantMode = CompileVertexShaderEx(_code.c_str(), GLSL_COMPILE_BLOCK, &alternate, diagnostics, sizeof(diagnostics), variantFlags, &resources);
 			primitiveVs.reset(alternate);
 			if (diagnostics[0] != '\0') bx::write(_messages, &err, "%s\n", diagnostics);
 			if (variantMode == GLSL_SHADER_MODE_ERROR) return false;
@@ -334,8 +338,8 @@ namespace bgfx
 		if (vertex) { file.vertexShaders.push_back(vertex); file.vertexShaders.push_back(primitiveVs.get()); }
 		if (pixel) file.pixelShaders.push_back(pixel);
 		const std::vector<uint8_t> bytes = SerializeGFD(file);
-		return vertex ? writeStage(_options, *vertex, declarations, bytes, _writer, _messages)
-			: writeStage(_options, *pixel, declarations, bytes, _writer, _messages);
+		return vertex ? writeStage(_options, *vertex, declarations, bytes, _writer, _messages, &resources)
+			: writeStage(_options, *pixel, declarations, bytes, _writer, _messages, &resources);
 	}
 }
 #else
