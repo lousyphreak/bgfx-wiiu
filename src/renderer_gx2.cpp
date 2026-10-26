@@ -44,6 +44,8 @@ namespace bgfx { namespace gx2
 	{
 		uint32_t* dst = (uint32_t*)_dst;
 		const uint8_t* src = (const uint8_t*)_src;
+		// Snapshots are vec4-heavy; reduce branches without a separate copy path.
+#pragma GCC unroll 4
 		for (uint32_t ii = 0; ii < _count; ++ii)
 		{
 			uint32_t bits;
