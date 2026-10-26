@@ -27,11 +27,11 @@ namespace bgfx { namespace gx2
 		enum Phase
 		{
 			ListAcquire, UniformAcquire, UniformFill, UniformZero, UniformInitial,
-			UniformApplication, UniformPredefined, UniformEnd, UniformPublish,
+			UniformApplication, UniformPredefined, UniformEnd, UniformPublish, UniformBind,
 			UniformInvalidate, ListFinish, ListCall, VertexUpload, IndexUpload,
 			BufferCopy, BufferPublish, BufferPreserve, StageReuse, TextureStage,
 			TextureUpload, TexturePublish, Textures, VertexInput, PipelineState,
-			Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild,
+			Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild, OcclusionResolve,
 			// Coarse phases/waits also measure actual thread CPU, excluding sleep.
 			Submit, EndFrame, Flip, ListWait, UniformWait, BufferReadWait,
 			ReadbackWait, FlipWait, PresentGpuWait, PhaseCount
@@ -40,7 +40,7 @@ namespace bgfx { namespace gx2
 		{
 			ListAllocated, UniformAllocated, ListBytes, UniformBytes,
 			VertexBytes, IndexBytes, BufferRenames, PreserveBytes,
-			StageRenames, StageAllocated, TextureSets, ContextRestores, ScissorSets, FetchCreates, PipelineSets, TextureViewBuilds, RasterBlendSets, SamplerBuilds, BytesCount
+			StageRenames, StageAllocated, TextureSets, ContextRestores, ScissorSets, FetchCreates, PipelineSets, TextureViewBuilds, RasterBlendSets, SamplerBuilds, OcclusionResults, VisibleDraws, BytesCount
 		};
 
 #if BGFX_CONFIG_GX2_PROFILER < 3
@@ -220,10 +220,10 @@ namespace bgfx { namespace gx2
 #if BGFX_CONFIG_GX2_PROFILER < 3
 			static const char* names[] = {
 				"ListAcquire", "UniformAcquire", "UniformFill", "UniformZero", "UniformInitial", "UniformApplication",
-				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformInvalidate", "ListFinish", "ListCall",
+				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformBind", "UniformInvalidate", "ListFinish", "ListCall",
 				"VertexUpload", "IndexUpload", "BufferCopy", "BufferPublish", "BufferPreserve", "StageReuse",
 				"TextureStage", "TextureUpload", "TexturePublish", "Textures", "VertexInput", "PipelineState",
-				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "Submit", "EndFrame", "Flip", "ListWait",
+				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "OcclusionResolve", "Submit", "EndFrame", "Flip", "ListWait",
 				"UniformWait", "BufferReadWait", "ReadbackWait", "FlipWait", "PresentGpuWait" };
 			OSReport("GX2_PROFILE_EVENTS bank=%u names=%s\n", BGFX_CONFIG_GX2_PROFILER,
 #if BGFX_CONFIG_GX2_PROFILER == 1
@@ -241,7 +241,7 @@ namespace bgfx { namespace gx2
 			}
 			static const char* byteNames[] = { "ListAllocated", "UniformAllocated", "ListBytes", "UniformBytes",
 				"VertexBytes", "IndexBytes", "BufferRenames", "PreserveBytes", "StageRenames", "StageAllocated",
-				"TextureSets", "ContextRestores", "ScissorSets", "FetchCreates", "PipelineSets", "TextureViewBuilds", "RasterBlendSets", "SamplerBuilds" };
+				"TextureSets", "ContextRestores", "ScissorSets", "FetchCreates", "PipelineSets", "TextureViewBuilds", "RasterBlendSets", "SamplerBuilds", "OcclusionResults", "VisibleDraws" };
 			for (uint32_t ii = 0; ii < BytesCount; ++ii) if (bytes[ii])
 				OSReport("GX2_PROFILE_COUNT name=%s value=%llu\n", byteNames[ii], (unsigned long long)bytes[ii]);
 			static const char* gpuNames[] = { "GRBM-total", "GRBM-active", "TCP-TCC-stall", "TCP-tag-stall",

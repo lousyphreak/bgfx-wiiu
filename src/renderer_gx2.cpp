@@ -1639,6 +1639,7 @@ namespace bgfx { namespace gx2
 
 		void resolveOcclusion(Frame* _render)
 		{
+			GX2_PROFILE_SCOPE(OcclusionResolve);
 			const OSTime completed = GX2GetRetiredTimeStamp();
 			size_t consumed = 0;
 			for (; consumed < m_pendingOcclusion.size(); ++consumed)
@@ -1654,6 +1655,7 @@ namespace bgfx { namespace gx2
 					if (!GX2QueryGetOcclusionResult((const GX2QueryData*)sample.block->data, &pixels)) break;
 					// bgfx's INT32_MIN is NoResult; retain zero and positive counts.
 					_render->m_occlusion[sample.handle.idx] = int32_t(bx::min<uint64_t>(pixels, INT32_MAX));
+					GX2_PROFILE_ADD(OcclusionResults, 1);
 				}
 				m_freeQueryBlocks.push_back(sample.block);
 			}
@@ -1662,8 +1664,7 @@ namespace bgfx { namespace gx2
 
 		bool isVisible(Frame* _render, OcclusionQueryHandle _handle, bool _visible)
 		{
-			resolveOcclusion(_render);
-			// Same last-available CPU result policy as this pin's GL/VK/WebGPU.
+			// Use the submit-start result snapshot, as in Vulkan/WebGPU.
 			// INT32_MIN (NoResult) is nonzero, so a positive condition draws initially.
 			return _visible == (0 != _render->m_occlusion[_handle.idx]);
 		}
@@ -3033,8 +3034,10 @@ namespace bgfx { namespace gx2
 				const uint32_t size = (stage ? _program.fragment : _program.vertex)->uniformSize;
 				if (size) { GX2_PROFILE_SCOPE(UniformPublish); DCFlushRangeNoSync(m_stageData[stage], size); }
 			}
-			if (_program.vertex->uniformSize) GX2SetVertexUniformBlock(0, _program.vertex->uniformSize, m_stageData[0]);
-			if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
+			{ GX2_PROFILE_SCOPE(UniformBind);
+				if (_program.vertex->uniformSize) GX2SetVertexUniformBlock(0, _program.vertex->uniformSize, m_stageData[0]);
+				if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
+			}
 			if (m_boundProgram != &_program)
 			{
 				Block* header = _program.primitiveId ? _program.vertex->primitiveHeader : _program.vertex->header;
@@ -4638,6 +4641,7 @@ namespace bgfx { namespace gx2
 				m_depthWritten |= m_hasDepth && ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && stencilWrite));
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
+				GX2_PROFILE_ADD(VisibleDraws, 1);
 				primitiveRestart(primitive, indexed ? (m_indexBuffers[draw.m_indexBuffer.idx].flags & BGFX_BUFFER_INDEX32 ? 4 : 2) : 0);
 				vertexInput(program, draw);
 				uint32_t count = 0;
