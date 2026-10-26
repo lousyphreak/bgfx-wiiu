@@ -1899,6 +1899,7 @@ namespace bgfx { namespace gx2
 
 		void bindFrameBuffer(FrameBufferHandle _handle)
 		{
+			GX2_PROFILE_SCOPE(FrameBufferBuild);
 			Window* window = windowFor(_handle);
 			if (window)
 			{

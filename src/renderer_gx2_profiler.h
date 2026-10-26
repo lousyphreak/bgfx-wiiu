@@ -31,7 +31,7 @@ namespace bgfx { namespace gx2
 			UniformInvalidate, ListFinish, ListCall, VertexUpload, IndexUpload,
 			BufferCopy, BufferPublish, BufferPreserve, StageReuse, TextureStage,
 			TextureUpload, TexturePublish, Textures, VertexInput, PipelineState,
-			Sort, ResolveTimers, Collect, Present, Scissor,
+			Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild,
 			// Coarse phases/waits also measure actual thread CPU, excluding sleep.
 			Submit, EndFrame, Flip, ListWait, UniformWait, BufferReadWait,
 			ReadbackWait, FlipWait, PresentGpuWait, PhaseCount
@@ -223,7 +223,7 @@ namespace bgfx { namespace gx2
 				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformInvalidate", "ListFinish", "ListCall",
 				"VertexUpload", "IndexUpload", "BufferCopy", "BufferPublish", "BufferPreserve", "StageReuse",
 				"TextureStage", "TextureUpload", "TexturePublish", "Textures", "VertexInput", "PipelineState",
-				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "Submit", "EndFrame", "Flip", "ListWait",
+				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "Submit", "EndFrame", "Flip", "ListWait",
 				"UniformWait", "BufferReadWait", "ReadbackWait", "FlipWait", "PresentGpuWait" };
 			OSReport("GX2_PROFILE_EVENTS bank=%u names=%s\n", BGFX_CONFIG_GX2_PROFILER,
 #if BGFX_CONFIG_GX2_PROFILER == 1
