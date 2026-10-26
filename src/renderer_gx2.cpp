@@ -515,6 +515,7 @@ namespace bgfx { namespace gx2
 			const uint32_t capacity = _ring.block->size;
 			const uint32_t offset = uint32_t(_ring.head%capacity);
 			const bool wrap = capacity-offset < _size;
+			GX2_PROFILE_ADD(ListWrapBytes, &_ring == &m_lists && wrap ? capacity-offset : 0);
 			const uint64_t start = _ring.head + (wrap ? capacity-offset : 0);
 			if (start+_size > _ring.tail+capacity)
 			{
@@ -535,6 +536,7 @@ namespace bgfx { namespace gx2
 				if (start+_size > _ring.tail+capacity)
 				{
 					// Publish queued ranges before waiting; never overwrite live bytes.
+					GX2_PROFILE_ADD(ListPressureSubmits, &_ring == &m_lists);
 					GX2Flush(); seal();
 					do
 					{
