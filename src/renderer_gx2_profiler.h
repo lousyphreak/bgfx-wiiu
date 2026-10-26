@@ -31,7 +31,7 @@ namespace bgfx { namespace gx2
 			UniformInvalidate, ListFinish, ListCall, VertexUpload, IndexUpload,
 			BufferCopy, BufferPublish, BufferPreserve, StageReuse, TextureStage,
 			TextureUpload, TexturePublish, Textures, VertexInput, PipelineState,
-			Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild, OcclusionResolve,
+			Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild, OcclusionResolve, AttachmentWrites, PrepareTextures, GraphicsImagesBind, GraphicsImagesWritten, DirectDraw, ExportPrepass, DrawLoop,
 			// Coarse phases/waits also measure actual thread CPU, excluding sleep.
 			Submit, EndFrame, Flip, ListWait, UniformWait, BufferReadWait,
 			ReadbackWait, FlipWait, PresentGpuWait, PhaseCount
@@ -223,7 +223,7 @@ namespace bgfx { namespace gx2
 				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformBind", "UniformInvalidate", "ListFinish", "ListCall",
 				"VertexUpload", "IndexUpload", "BufferCopy", "BufferPublish", "BufferPreserve", "StageReuse",
 				"TextureStage", "TextureUpload", "TexturePublish", "Textures", "VertexInput", "PipelineState",
-				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "OcclusionResolve", "Submit", "EndFrame", "Flip", "ListWait",
+				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "OcclusionResolve", "AttachmentWrites", "PrepareTextures", "GraphicsImagesBind", "GraphicsImagesWritten", "DirectDraw", "ExportPrepass", "DrawLoop", "Submit", "EndFrame", "Flip", "ListWait",
 				"UniformWait", "BufferReadWait", "ReadbackWait", "FlipWait", "PresentGpuWait" };
 			OSReport("GX2_PROFILE_EVENTS bank=%u names=%s\n", BGFX_CONFIG_GX2_PROFILER,
 #if BGFX_CONFIG_GX2_PROFILER == 1

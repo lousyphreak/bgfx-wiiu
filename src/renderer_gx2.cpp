@@ -2260,6 +2260,7 @@ namespace bgfx { namespace gx2
 
 		bool prepareTextures(const RenderBind& _bind, const Program& _program)
 		{
+			GX2_PROFILE_SCOPE(PrepareTextures);
 			bool restored = false;
 			for (uint32_t mask = _program.samplerMask; mask; mask &= mask-1)
 			{
@@ -4023,6 +4024,7 @@ namespace bgfx { namespace gx2
 
 		bool graphicsImagesBind(GraphicsImages& _images, Block* _exports, const Program& _program, const RenderBind& _bind)
 		{
+			GX2_PROFILE_SCOPE(GraphicsImagesBind);
 			if (_images.images.empty()) return false;
 			bool restored = false;
 			// Sampled aliases consume canonical texture storage.
@@ -4088,6 +4090,7 @@ namespace bgfx { namespace gx2
 
 		void graphicsImagesWritten(GraphicsImages& _images, const Program& _program, const RenderBind& _bind)
 		{
+			GX2_PROFILE_SCOPE(GraphicsImagesWritten);
 			for (const Shader* shader : { _program.vertex, _program.fragment })
 				for (const ComputeResource& resource : shader->resources)
 					if (resource.write) graphicsImage(_images, _bind.m_bind[resource.binding])->authority = 2;
@@ -4502,28 +4505,31 @@ namespace bgfx { namespace gx2
 			{ GX2_PROFILE_SCOPE(Sort); _render->sort(); }
 			uint32_t exportBytes = 0;
 			bool hasGraphicsImages = false;
-			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 			{
-				SortKey key;
-				if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
+				GX2_PROFILE_SCOPE(ExportPrepass);
+				for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 				{
-					const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
-					std::vector<ComputeOutput> outputs;
-					exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
-					if (isValid(compute.m_indirectBuffer)) exportBytes = bx::max(exportBytes, 144u);
-				}
-				else
-				{
-					const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
-					if (draw.m_streamMask)
+					SortKey key;
+					if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
 					{
-						const Program& program = m_programs[key.m_program.idx];
-						hasGraphicsImages |= !program.vertex->resources.empty() || !program.fragment->resources.empty();
+						const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
+						std::vector<ComputeOutput> outputs;
+						exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
+						if (isValid(compute.m_indirectBuffer)) exportBytes = bx::max(exportBytes, 144u);
 					}
-					if (!isValid(draw.m_indirectBuffer)) continue;
-					const bool indexed = isValid(draw.m_indexBuffer);
-					const uint32_t num = indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect);
-					exportBytes = bx::max(exportBytes, bx::min(num, indirectChunk(indexed))*(indexed ? 96u : 80u));
+					else
+					{
+						const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
+						if (draw.m_streamMask)
+						{
+							const Program& program = m_programs[key.m_program.idx];
+							hasGraphicsImages |= !program.vertex->resources.empty() || !program.fragment->resources.empty();
+						}
+						if (!isValid(draw.m_indirectBuffer)) continue;
+						const bool indexed = isValid(draw.m_indexBuffer);
+						const uint32_t num = indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect);
+						exportBytes = bx::max(exportBytes, bx::min(num, indirectChunk(indexed))*(indexed ? 96u : 80u));
+					}
 				}
 			}
 			GraphicsImages images;
@@ -4550,6 +4556,7 @@ namespace bgfx { namespace gx2
 			beginBatch();
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 			{
+				GX2_PROFILE_SCOPE(DrawLoop);
 				SortKey key;
 				const bool compute = key.decode(_render->m_sortKeys[item], _render->m_viewRemap);
 				const View& renderView = _render->view(key.m_view);
@@ -4654,17 +4661,26 @@ namespace bgfx { namespace gx2
 					const uint8_t mask = uint8_t(draw.m_sampleMask); GX2SetAAMask(mask, mask, mask, mask); m_sampleMask = draw.m_sampleMask;
 				}
 				state(draw.m_stateFlags, draw.m_stencil, draw.m_rgba, 0 != (_render->m_debug & BGFX_DEBUG_WIREFRAME), program.fragment->sampleFrequency);
-				const uint32_t colorMask = colorWriteMask(draw.m_stateFlags);
-				const uint32_t exports = ((const GX2PixelShader*)program.fragment->header->data)->regs.cb_shader_mask;
-				for (uint32_t target = 0; target < m_numColors; ++target)
-					if ((exports >> (target*4)) & colorMask) m_colorWritten |= 1u << target;
-				const uint32_t front = unpackStencil(0, draw.m_stencil);
-				const uint32_t back = stencilFrontAndBack(draw.m_stencil) ? unpackStencil(1, draw.m_stencil) : front;
-				const uint32_t ops = BGFX_STENCIL_OP_FAIL_S_MASK | BGFX_STENCIL_OP_FAIL_Z_MASK | BGFX_STENCIL_OP_PASS_Z_MASK;
-				const uint32_t keep = BGFX_STENCIL_OP_FAIL_S_KEEP | BGFX_STENCIL_OP_FAIL_Z_KEEP | BGFX_STENCIL_OP_PASS_Z_KEEP;
-				const bool stencilWrite = stencilEnabled(draw.m_stencil) && unpackStencilWriteMask(draw.m_stencil)
-					&& ((front & ops) != keep || (back & ops) != keep);
-				m_depthWritten |= m_hasDepth && ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && stencilWrite));
+				{
+					GX2_PROFILE_SCOPE(AttachmentWrites);
+					if (m_colorWritten != (1u << m_numColors)-1)
+					{
+						const uint32_t colorMask = colorWriteMask(draw.m_stateFlags);
+						const uint32_t exports = ((const GX2PixelShader*)program.fragment->header->data)->regs.cb_shader_mask;
+						for (uint32_t target = 0; target < m_numColors; ++target)
+							if ((exports >> (target*4)) & colorMask) m_colorWritten |= 1u << target;
+					}
+					if (m_hasDepth && !m_depthWritten)
+					{
+						const uint32_t front = unpackStencil(0, draw.m_stencil);
+						const uint32_t back = stencilFrontAndBack(draw.m_stencil) ? unpackStencil(1, draw.m_stencil) : front;
+						const uint32_t ops = BGFX_STENCIL_OP_FAIL_S_MASK | BGFX_STENCIL_OP_FAIL_Z_MASK | BGFX_STENCIL_OP_PASS_Z_MASK;
+						const uint32_t keep = BGFX_STENCIL_OP_FAIL_S_KEEP | BGFX_STENCIL_OP_FAIL_Z_KEEP | BGFX_STENCIL_OP_PASS_Z_KEEP;
+						const bool stencilWrite = stencilEnabled(draw.m_stencil) && unpackStencilWriteMask(draw.m_stencil)
+							&& ((front & ops) != keep || (back & ops) != keep);
+						m_depthWritten = ((!m_depthReadOnly && (draw.m_stateFlags & BGFX_STATE_WRITE_Z)) || (!m_stencilReadOnly && stencilWrite));
+					}
+				}
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
 				GX2_PROFILE_ADD(VisibleDraws, 1);
@@ -4691,8 +4707,11 @@ namespace bgfx { namespace gx2
 					Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
 					const uint32_t indexSize = buffer.flags & BGFX_BUFFER_INDEX32 ? 4 : 2;
 					count = draw.m_numIndices == UINT32_MAX ? buffer.size/indexSize-draw.m_startIndex : draw.m_numIndices;
-					GX2DrawIndexedEx(primitive, count, indexSize == 4 ? (buffer.littleEndian ? GX2_INDEX_TYPE_U32_LE : GX2_INDEX_TYPE_U32) : (buffer.littleEndian ? GX2_INDEX_TYPE_U16_LE : GX2_INDEX_TYPE_U16),
-						(uint8_t*)buffer.block->data+draw.m_startIndex*indexSize, 0, draw.m_numInstances);
+					{
+						GX2_PROFILE_SCOPE(DirectDraw);
+						GX2DrawIndexedEx(primitive, count, indexSize == 4 ? (buffer.littleEndian ? GX2_INDEX_TYPE_U32_LE : GX2_INDEX_TYPE_U32) : (buffer.littleEndian ? GX2_INDEX_TYPE_U16_LE : GX2_INDEX_TYPE_U16),
+							(uint8_t*)buffer.block->data+draw.m_startIndex*indexSize, 0, draw.m_numInstances);
+					}
 					touch(buffer.block);
 				}
 				else
@@ -4707,7 +4726,7 @@ namespace bgfx { namespace gx2
 								const VertexLayout& layout = m_layouts[isValid(stream.m_layoutHandle) ? stream.m_layoutHandle.idx : buffer.layout.idx];
 								count = bx::min(count, buffer.size/layout.m_stride-stream.m_startVertex);
 							}
-					GX2DrawEx(primitive, count, 0, draw.m_numInstances);
+					{ GX2_PROFILE_SCOPE(DirectDraw); GX2DrawEx(primitive, count, 0, draw.m_numInstances); }
 				}
 				graphicsImagesWritten(images, program, _render->m_renderBind[draw.m_bindIdx]);
 				if (occlusion) endOcclusion(occlusion);
