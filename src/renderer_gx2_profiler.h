@@ -40,7 +40,7 @@ namespace bgfx { namespace gx2
 		{
 			ListAllocated, UniformAllocated, ListBytes, UniformBytes,
 			VertexBytes, IndexBytes, BufferRenames, PreserveBytes,
-			StageRenames, StageAllocated, TextureSets, ContextRestores, ScissorSets, FetchCreates, PipelineSets, TextureViewBuilds, BytesCount
+			StageRenames, StageAllocated, TextureSets, ContextRestores, ScissorSets, FetchCreates, PipelineSets, TextureViewBuilds, RasterBlendSets, BytesCount
 		};
 
 #if BGFX_CONFIG_GX2_PROFILER < 3
@@ -241,7 +241,7 @@ namespace bgfx { namespace gx2
 			}
 			static const char* byteNames[] = { "ListAllocated", "UniformAllocated", "ListBytes", "UniformBytes",
 				"VertexBytes", "IndexBytes", "BufferRenames", "PreserveBytes", "StageRenames", "StageAllocated",
-				"TextureSets", "ContextRestores", "ScissorSets", "FetchCreates", "PipelineSets", "TextureViewBuilds" };
+				"TextureSets", "ContextRestores", "ScissorSets", "FetchCreates", "PipelineSets", "TextureViewBuilds", "RasterBlendSets" };
 			for (uint32_t ii = 0; ii < BytesCount; ++ii) if (bytes[ii])
 				OSReport("GX2_PROFILE_COUNT name=%s value=%llu\n", byteNames[ii], (unsigned long long)bytes[ii]);
 			static const char* gpuNames[] = { "GRBM-total", "GRBM-active", "TCP-TCC-stall", "TCP-tag-stall",

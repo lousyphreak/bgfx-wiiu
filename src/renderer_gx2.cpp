@@ -3252,6 +3252,10 @@ namespace bgfx { namespace gx2
 				const uint8_t readMask = uint8_t(front >> BGFX_STENCIL_FUNC_RMASK_SHIFT);
 				const uint8_t writeMask = m_stencilReadOnly ? 0 : unpackStencilWriteMask(_stencil);
 				GX2SetStencilMask(readMask, writeMask, uint8_t(front), readMask, writeMask, uint8_t(back));
+				// Stencil-only changes preserve raster, blend, color-mask and point state.
+				if (_state == m_cachedState && _wireframe == m_wireframe && _rgba == m_cachedRgba)
+				{ m_cachedStencil = _stencil; return; }
+				GX2_PROFILE_ADD(RasterBlendSets, 1);
 				const bool ccw = 0 != (_state & BGFX_STATE_FRONT_CCW);
 				const bool bias = m_depthControl.m_constant != 0 || m_depthControl.m_slopeScale != 0;
 				GX2SetPolygonControl(ccw ? GX2_FRONT_FACE_CCW : GX2_FRONT_FACE_CW,
