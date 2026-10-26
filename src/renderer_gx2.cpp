@@ -1103,7 +1103,14 @@ namespace bgfx { namespace gx2
 			BGFX_FATAL(loaded, Fatal::InvalidShader, "GX2 GFD loader: %s", GFDGetLastErrorString());
 			if (shader.fragment)
 			{
-				const auto& regs = ((const GX2PixelShader*)shader.header->data)->regs;
+				auto& regs = ((GX2PixelShader*)shader.header->data)->regs;
+				for (const ComputeResource& resource : shader.resources) if (resource.write)
+				{
+					// Image side effects survive unused exports; late tests also survive Hi-Z rejection.
+					regs.db_shader_control |= 1u << 11; // EXEC_ON_NOOP.
+					if (!(regs.db_shader_control & 0x30)) regs.db_shader_control |= 1u << 10; // EXEC_ON_HIER_FAIL.
+					break;
+				}
 				shader.sampleFrequency = 0 != (regs.spi_ps_in_control_1 & 0x01000000) // SampleID / sample mask.
 					|| 0 != (regs.spi_ps_in_control_0 & 0x40000000); // Sample-qualified position.
 				for (uint32_t input = 0; input < regs.num_spi_ps_input_cntl; ++input)
