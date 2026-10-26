@@ -3387,25 +3387,35 @@ namespace bgfx { namespace gx2
 					{ GX2_PROFILE_ADD(TextureViewBuilds, 1); GX2InitTextureRegs(&view); }
 					if (stages & 2) { GX2_PROFILE_ADD(TextureSets, 1); GX2SetPixelTexture(&view, ii); }
 					if (stages & 1) { GX2_PROFILE_ADD(TextureSets, 1); GX2SetVertexTexture(&view, ii); }
-					GX2Sampler sampler;
-					GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
-					GX2InitSamplerClamping(&sampler, clamps[(flags & BGFX_SAMPLER_U_MASK) >> BGFX_SAMPLER_U_SHIFT],
-						clamps[(flags & BGFX_SAMPLER_V_MASK) >> BGFX_SAMPLER_V_SHIFT], clamps[(flags & BGFX_SAMPLER_W_MASK) >> BGFX_SAMPLER_W_SHIFT]);
-					GX2InitSamplerXYFilter(&sampler, flags & BGFX_SAMPLER_MAG_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
-						flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
-						flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? m_anisotropy : GX2_TEX_ANISO_RATIO_NONE);
-					GX2InitSamplerZMFilter(&sampler, flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR,
-						view.viewNumMips <= 1 || (flags & BGFX_SAMPLER_MIP_POINT) ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
-					const float maxLod = float(view.viewNumMips-1);
-					GX2InitSamplerLOD(&sampler, bx::min(maxLod, float(bind.m_lod.min)*0.25f),
-						bind.m_lod.max == UINT8_MAX ? maxLod : bx::min(maxLod, float(bind.m_lod.max)*0.25f), 0);
-					if ((flags & BGFX_SAMPLER_SAMPLE_STENCIL) || (uint32_t(view.surface.format) & 0x300) == 0x100 || (uint32_t(view.surface.format) & 0x300) == 0x300)
+					const bool integer = (uint32_t(view.surface.format) & 0x300) == 0x100 || (uint32_t(view.surface.format) & 0x300) == 0x300;
+					// Cache CPU register construction, independently of GPU binding state.
+					const uint64_t samplerKey = uint64_t(flags) | (uint64_t(view.viewNumMips) << 32)
+						| (uint64_t(bind.m_lod.min) << 40) | (uint64_t(bind.m_lod.max) << 48)
+						| (uint64_t(borderType) << 56) | (uint64_t(integer) << 58) | (uint64_t(m_anisotropy) << 59);
+					GX2Sampler& sampler = m_sampler;
+					if (samplerKey != m_samplerKey)
 					{
-						GX2InitSamplerXYFilter(&sampler, GX2_TEX_XY_FILTER_MODE_POINT, GX2_TEX_XY_FILTER_MODE_POINT, GX2_TEX_ANISO_RATIO_NONE);
-						GX2InitSamplerZMFilter(&sampler, GX2_TEX_Z_FILTER_MODE_POINT, GX2_TEX_MIP_FILTER_MODE_POINT);
+						GX2_PROFILE_ADD(SamplerBuilds, 1);
+						GX2InitSampler(&sampler, GX2_TEX_CLAMP_MODE_WRAP, GX2_TEX_XY_FILTER_MODE_LINEAR);
+						GX2InitSamplerClamping(&sampler, clamps[(flags & BGFX_SAMPLER_U_MASK) >> BGFX_SAMPLER_U_SHIFT],
+							clamps[(flags & BGFX_SAMPLER_V_MASK) >> BGFX_SAMPLER_V_SHIFT], clamps[(flags & BGFX_SAMPLER_W_MASK) >> BGFX_SAMPLER_W_SHIFT]);
+						GX2InitSamplerXYFilter(&sampler, flags & BGFX_SAMPLER_MAG_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
+							flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_XY_FILTER_MODE_POINT : GX2_TEX_XY_FILTER_MODE_LINEAR,
+							flags & (BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC) ? m_anisotropy : GX2_TEX_ANISO_RATIO_NONE);
+						GX2InitSamplerZMFilter(&sampler, flags & BGFX_SAMPLER_MIN_POINT ? GX2_TEX_Z_FILTER_MODE_POINT : GX2_TEX_Z_FILTER_MODE_LINEAR,
+							view.viewNumMips <= 1 || (flags & BGFX_SAMPLER_MIP_POINT) ? GX2_TEX_MIP_FILTER_MODE_POINT : GX2_TEX_MIP_FILTER_MODE_LINEAR);
+						const float maxLod = float(view.viewNumMips-1);
+						GX2InitSamplerLOD(&sampler, bx::min(maxLod, float(bind.m_lod.min)*0.25f),
+							bind.m_lod.max == UINT8_MAX ? maxLod : bx::min(maxLod, float(bind.m_lod.max)*0.25f), 0);
+						if ((flags & BGFX_SAMPLER_SAMPLE_STENCIL) || integer)
+						{
+							GX2InitSamplerXYFilter(&sampler, GX2_TEX_XY_FILTER_MODE_POINT, GX2_TEX_XY_FILTER_MODE_POINT, GX2_TEX_ANISO_RATIO_NONE);
+							GX2InitSamplerZMFilter(&sampler, GX2_TEX_Z_FILTER_MODE_POINT, GX2_TEX_MIP_FILTER_MODE_POINT);
+						}
+						GX2InitSamplerDepthCompare(&sampler, s_compare[(flags & BGFX_SAMPLER_COMPARE_MASK) >> BGFX_SAMPLER_COMPARE_SHIFT]);
+						GX2InitSamplerBorderType(&sampler, borderType);
+						m_samplerKey = samplerKey;
 					}
-					GX2InitSamplerDepthCompare(&sampler, s_compare[(flags & BGFX_SAMPLER_COMPARE_MASK) >> BGFX_SAMPLER_COMPARE_SHIFT]);
-					GX2InitSamplerBorderType(&sampler, borderType);
 					if (stages & 2) GX2SetPixelSampler(&sampler, ii);
 					if (stages & 1) GX2SetVertexSampler(&sampler, ii);
 					m_boundTextures[ii] = &texture.texture; m_boundBindings[ii] = bind; m_boundDimensions[ii] = encodedDimension; m_boundStages[ii] = stages;
@@ -4796,6 +4806,8 @@ namespace bgfx { namespace gx2
 		uint32_t m_cachedRgba;
 		void* m_boundExportData = NULL;
 		uint32_t m_boundExportSize = 0;
+		GX2Sampler m_sampler;
+		uint64_t m_samplerKey = UINT64_MAX;
 		Program* m_boundProgram = NULL;
 		Block* m_boundFetch = NULL;
 		Block* m_defaultVertex = NULL;
