@@ -1443,6 +1443,7 @@ namespace bgfx { namespace gx2
 			{
 				texture.external = (_external & 1) ? (const Gx2ExternalTexture*)(uintptr_t)(_external & ~UINT64_C(1)) : NULL;
 				texture.texture = texture.external ? *texture.external->texture : *(const GX2Texture*)(uintptr_t)_external;
+				GX2InitTextureRegs(&texture.texture);
 				texture.renderSurface = texture.external && texture.external->color ? texture.external->color->surface
 					: texture.external && texture.external->depth ? texture.external->depth->surface : texture.texture.surface;
 				if (texture.external && texture.external->depth)
@@ -1481,8 +1482,8 @@ namespace bgfx { namespace gx2
 				if (depth) surface.use = GX2_SURFACE_USE_TEXTURE;
 				if (_flags & BGFX_TEXTURE_RT_WRITE_ONLY) surface = render;
 			}
-			allocateTexture(texture); textureLevels(texture);
 			texture.texture.viewNumMips = surface.mipLevels;
+			allocateTexture(texture); textureLevels(texture);
 			texture.renderSurface = surface;
 			if ((_flags & BGFX_TEXTURE_RT_MASK) && !(_flags & BGFX_TEXTURE_RT_WRITE_ONLY)
 			&& (separateDepth || (aa != GX2_AA_MODE1X && !(_flags & BGFX_TEXTURE_MSAA_SAMPLE))))
@@ -3361,7 +3362,8 @@ namespace bgfx { namespace gx2
 						else if (color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_BLACK;
 					}
 					else if (color[0] == 1 && color[1] == 1 && color[2] == 1 && color[3] == 1) borderType = GX2_TEX_BORDER_TYPE_WHITE;
-					GX2Texture view = texture.texture.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && dimension == TextureDimension::Dimension2DArray ? texture.arrayView : texture.texture;
+					const GX2Texture& base = texture.texture.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE && dimension == TextureDimension::Dimension2DArray ? texture.arrayView : texture.texture;
+					GX2Texture view = base;
 					view.viewFirstMip = bind.m_firstMip;
 					view.viewNumMips = bx::min<uint32_t>(bind.m_numMips, view.surface.mipLevels-bind.m_firstMip);
 					const bool cube = view.surface.dim == GX2_SURFACE_DIM_TEXTURE_CUBE;
@@ -3374,7 +3376,11 @@ namespace bgfx { namespace gx2
 						view.surface.format = texture.format == TextureFormat::D32FS8 ? GX2_SURFACE_FORMAT_UINT_G8_X24 : GX2_SURFACE_FORMAT_UINT_X24_G8;
 						view.compMap = GX2_COMP_MAP(1, 4, 4, 5);
 					}
-					GX2InitTextureRegs(&view);
+					// Reuse prepared base registers when the sampled view is unchanged.
+					if (view.viewFirstMip != base.viewFirstMip || view.viewNumMips != base.viewNumMips
+					|| view.viewFirstSlice != base.viewFirstSlice || view.viewNumSlices != base.viewNumSlices
+					|| view.surface.format != base.surface.format || view.compMap != base.compMap)
+					{ GX2_PROFILE_ADD(TextureViewBuilds, 1); GX2InitTextureRegs(&view); }
 					if (stages & 2) { GX2_PROFILE_ADD(TextureSets, 1); GX2SetPixelTexture(&view, ii); }
 					if (stages & 1) { GX2_PROFILE_ADD(TextureSets, 1); GX2SetVertexTexture(&view, ii); }
 					GX2Sampler sampler;
