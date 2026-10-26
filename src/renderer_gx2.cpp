@@ -589,6 +589,7 @@ namespace bgfx { namespace gx2
 		{
 			_buffer.size = _size;
 			_buffer.flags = _flags;
+			m_needExportPrepass |= 0 != (_flags & BGFX_BUFFER_DRAW_INDIRECT);
 			_buffer.gpuWritten = false;
 			_buffer.littleEndian = false;
 			_buffer.block = (_flags & (BGFX_BUFFER_COMPUTE_READ_WRITE | BGFX_BUFFER_DRAW_INDIRECT))
@@ -1149,11 +1150,13 @@ namespace bgfx { namespace gx2
 			if (!isValid(_fsh))
 			{
 				program.compute = &m_shaders[_vsh.idx];
+				m_needExportPrepass = true;
 				program.m_predefined = program.compute->predefined;
 				program.m_numPredefined = uint16_t(program.m_predefined.size());
 				return;
 			}
 			program.vertex = &m_shaders[_vsh.idx]; program.fragment = &m_shaders[_fsh.idx];
+			m_needExportPrepass |= !program.vertex->resources.empty() || !program.fragment->resources.empty();
 			program.samplerMask = (program.vertex->rawSrvMask | program.fragment->rawSrvMask) & ((1u << kTextureSamplers)-1);
 			for (uint32_t unit = 0; unit < kTextureSamplers; ++unit)
 				if (program.vertex->samplerDimensions[unit] || program.fragment->samplerDimensions[unit]) program.samplerMask |= 1u << unit;
@@ -4507,28 +4510,31 @@ namespace bgfx { namespace gx2
 			bool hasGraphicsImages = false;
 			{
 				GX2_PROFILE_SCOPE(ExportPrepass);
-				for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
+				if (m_needExportPrepass)
 				{
-					SortKey key;
-					if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
+					for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 					{
-						const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
-						std::vector<ComputeOutput> outputs;
-						exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
-						if (isValid(compute.m_indirectBuffer)) exportBytes = bx::max(exportBytes, 144u);
-					}
-					else
-					{
-						const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
-						if (draw.m_streamMask)
+						SortKey key;
+						if (key.decode(_render->m_sortKeys[item], _render->m_viewRemap))
 						{
-							const Program& program = m_programs[key.m_program.idx];
-							hasGraphicsImages |= !program.vertex->resources.empty() || !program.fragment->resources.empty();
+							const RenderCompute& compute = _render->m_renderItem[_render->m_sortValues[item]].compute;
+							std::vector<ComputeOutput> outputs;
+							exportBytes = bx::max(exportBytes, computeLayout(*m_programs[key.m_program.idx].compute, _render->m_renderBind[compute.m_bindIdx], outputs));
+							if (isValid(compute.m_indirectBuffer)) exportBytes = bx::max(exportBytes, 144u);
 						}
-						if (!isValid(draw.m_indirectBuffer)) continue;
-						const bool indexed = isValid(draw.m_indexBuffer);
-						const uint32_t num = indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect);
-						exportBytes = bx::max(exportBytes, bx::min(num, indirectChunk(indexed))*(indexed ? 96u : 80u));
+						else
+						{
+							const RenderDraw& draw = _render->m_renderItem[_render->m_sortValues[item]].draw;
+							if (draw.m_streamMask)
+							{
+								const Program& program = m_programs[key.m_program.idx];
+								hasGraphicsImages |= !program.vertex->resources.empty() || !program.fragment->resources.empty();
+							}
+							if (!isValid(draw.m_indirectBuffer)) continue;
+							const bool indexed = isValid(draw.m_indexBuffer);
+							const uint32_t num = indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect);
+							exportBytes = bx::max(exportBytes, bx::min(num, indirectChunk(indexed))*(indexed ? 96u : 80u));
+						}
 					}
 				}
 			}
@@ -4847,6 +4853,8 @@ namespace bgfx { namespace gx2
 		uint8_t* m_stageData[2];
 		TextVideoMem m_statsText;
 		bool m_wireframe = false;
+		// Sticky: ordinary graphics frames need no export-layout traversal.
+		bool m_needExportPrepass = false;
 		DepthControl m_depthControl = {};
 		uint32_t m_restartSize = UINT32_MAX;
 		uint32_t m_rasterMode = UINT32_MAX;
