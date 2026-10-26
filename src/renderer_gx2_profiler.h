@@ -209,9 +209,9 @@ namespace bgfx { namespace gx2
 		void report(uint32_t _frame, bool _vsync)
 		{
 			std::sort(intervals, intervals+120);
-			OSReport("GX2_PROFILE_FRAME frame=%u n=120 vsync=%u cpuMs=%.6f frameMs=%.6f frame95=%.6f gpuMs=%.6f gpuN=%u draws=%.3f\n",
+			OSReport("GX2_PROFILE_FRAME frame=%u n=120 vsync=%u cpuMs=%.6f frameMs=%.6f frame50=%.6f frame95=%.6f frame99=%.6f frameMax=%.6f gpuMs=%.6f gpuN=%u draws=%.3f\n",
 				_frame, unsigned(_vsync), double(work)/62156.25/120, double(wall)/62156.25/120,
-				intervals[113], gpuFrames ? double(gpuTicks)/27000/gpuFrames : 0, gpuFrames, double(draws)/120);
+				intervals[59], intervals[113], intervals[118], intervals[119], gpuFrames ? double(gpuTicks)/27000/gpuFrames : 0, gpuFrames, double(draws)/120);
 #if BGFX_CONFIG_GX2_PROFILER == 3
 			OSReport("GX2_PROFILE_RENDER_CPU frame=%u submitMs=%.6f endFrameMs=%.6f flipMs=%.6f\n",
 				_frame, double(coarse[0])/62156.25/120, double(coarse[1])/62156.25/120, double(coarse[2])/62156.25/120);
