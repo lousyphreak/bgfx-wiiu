@@ -2072,8 +2072,8 @@ namespace bgfx { namespace gx2
 			}
 			GX2SetAAMode(_color ? _color->surface.aa : _depth->surface.aa);
 			GX2SetViewport(0, 0, _width, _height, -1, 1);
-			if (_rect) GX2SetScissor(_rect->m_x, _rect->m_y, _rect->m_width, _rect->m_height);
-			else GX2SetScissor(0, 0, _width, _height);
+			if (_rect) setScissor(*_rect);
+			else setScissor({0, 0, uint16_t(_width), uint16_t(_height)});
 			GX2SetDepthStencilControl(_depth != NULL, _depth != NULL, GX2_COMPARE_FUNC_ALWAYS, _stencil != NULL, FALSE,
 				GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE,
 				GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE, GX2_STENCIL_FUNCTION_REPLACE);
@@ -2922,6 +2922,7 @@ namespace bgfx { namespace gx2
 			m_restartSize = UINT32_MAX; primitiveRestart(GX2_PRIMITIVE_MODE_TRIANGLES, 0);
 			m_cachedState = UINT64_MAX;
 			m_cachedStencil = UINT64_MAX;
+			m_cachedScissor = {-1, -1, UINT16_MAX, UINT16_MAX};
 			m_cachedRgba = UINT32_MAX;
 			m_boundProgram = NULL;
 			m_boundFetch = NULL;
@@ -3671,6 +3672,17 @@ namespace bgfx { namespace gx2
 		}
 
 
+		void setScissor(const Rect& _rect)
+		{
+			GX2_PROFILE_SCOPE(Scissor);
+			if (0 != __builtin_memcmp(&m_cachedScissor, &_rect, sizeof(Rect)))
+			{
+				GX2_PROFILE_ADD(ScissorSets, 1);
+				GX2SetScissor(_rect.m_x, _rect.m_y, _rect.m_width, _rect.m_height);
+				m_cachedScissor = _rect;
+			}
+		}
+
 		void viewport(const View& _view)
 		{
 			const Rect& rect = _view.m_rect;
@@ -3755,7 +3767,7 @@ namespace bgfx { namespace gx2
 			{
 				const Rect& viewportRect = _view.m_rect;
 				GX2SetViewport(viewportRect.m_x, viewportRect.m_y, viewportRect.m_width, viewportRect.m_height, -1, 1);
-				GX2SetScissor(rect.m_x, rect.m_y, rect.m_width, rect.m_height);
+				setScissor(rect);
 				Program& program = m_programs[_quad.m_program[bx::max<uint32_t>(1, m_numColors)-1].idx];
 				const UniformRegInfo* colorUniform = m_uniformReg.find("bgfx_clear_color");
 				const UniformRegInfo* depthUniform = m_uniformReg.find("bgfx_clear_depth");
@@ -4577,7 +4589,7 @@ namespace bgfx { namespace gx2
 				Program& program = m_programs[key.m_program.idx];
 				if (graphicsImagesBind(images, exports, program, _render->m_renderBind[draw.m_bindIdx])) viewport(renderView);
 				if (prepareTextures(_render->m_renderBind[draw.m_bindIdx], program)) viewport(renderView);
-				GX2SetScissor(scissor.m_x, scissor.m_y, scissor.m_width, scissor.m_height);
+				setScissor(scissor);
 				uniformsBegin(program);
 				viewState.m_alphaRef = float((draw.m_stateFlags & BGFX_STATE_ALPHA_REF_MASK) >> BGFX_STATE_ALPHA_REF_SHIFT)/255;
 				{ GX2_PROFILE_SCOPE(UniformPredefined); viewState.setPredefined<4>(this, view, renderView, program, _render, draw); }
@@ -4675,7 +4687,7 @@ namespace bgfx { namespace gx2
 			if (window) window->used = true;
 			restore(); bindFrameBuffer(_handle); beginBatch();
 			GX2SetViewport(0, 0, m_targetWidth, m_targetHeight, -1, 1);
-			GX2SetScissor(0, 0, m_targetWidth, m_targetHeight);
+			setScissor({0, 0, uint16_t(m_targetWidth), uint16_t(m_targetHeight)});
 			state(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A, 0, 0);
 		}
 
@@ -4778,6 +4790,7 @@ namespace bgfx { namespace gx2
 		uint8_t m_boundStages[kTextureSamplers];
 		float m_borderColors[2][kTextureSamplers][4];
 		uint32_t m_borderValid[2] = {};
+		Rect m_cachedScissor;
 		GX2TexAnisoRatio m_anisotropy = GX2_TEX_ANISO_RATIO_NONE;
 	};
 

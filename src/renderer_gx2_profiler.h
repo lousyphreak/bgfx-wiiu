@@ -5,7 +5,7 @@
 
 // 0: absent; 1: CPU cycles/instructions/L2 misses/castouts + GPU counters;
 // 2: CPU unresolved stalls/instructions/L1 load-miss cycles/branch misses;
-// 3: low-overhead whole-cycle CPU/GPU timing, without scopes or hardware counters.
+// 3: low-overhead whole-cycle CPU/GPU and coarse renderer timing, without per-draw probes.
 // Detailed scopes are inclusive. Compare final changes with mode 3 as well.
 #ifndef BGFX_CONFIG_GX2_PROFILER
 # define BGFX_CONFIG_GX2_PROFILER 0
@@ -31,7 +31,7 @@ namespace bgfx { namespace gx2
 			UniformInvalidate, ListFinish, ListCall, VertexUpload, IndexUpload,
 			BufferCopy, BufferPublish, BufferPreserve, StageReuse, TextureStage,
 			TextureUpload, TexturePublish, Textures, VertexInput, PipelineState,
-			Sort, ResolveTimers, Collect, Present,
+			Sort, ResolveTimers, Collect, Present, Scissor,
 			// Coarse phases/waits also measure actual thread CPU, excluding sleep.
 			Submit, EndFrame, Flip, ListWait, UniformWait, BufferReadWait,
 			ReadbackWait, FlipWait, PresentGpuWait, PhaseCount
@@ -40,7 +40,7 @@ namespace bgfx { namespace gx2
 		{
 			ListAllocated, UniformAllocated, ListBytes, UniformBytes,
 			VertexBytes, IndexBytes, BufferRenames, PreserveBytes,
-			StageRenames, StageAllocated, TextureSets, ContextRestores, BytesCount
+			StageRenames, StageAllocated, TextureSets, ContextRestores, ScissorSets, BytesCount
 		};
 
 #if BGFX_CONFIG_GX2_PROFILER < 3
@@ -223,7 +223,7 @@ namespace bgfx { namespace gx2
 				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformInvalidate", "ListFinish", "ListCall",
 				"VertexUpload", "IndexUpload", "BufferCopy", "BufferPublish", "BufferPreserve", "StageReuse",
 				"TextureStage", "TextureUpload", "TexturePublish", "Textures", "VertexInput", "PipelineState",
-				"Sort", "ResolveTimers", "Collect", "Present", "Submit", "EndFrame", "Flip", "ListWait",
+				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "Submit", "EndFrame", "Flip", "ListWait",
 				"UniformWait", "BufferReadWait", "ReadbackWait", "FlipWait", "PresentGpuWait" };
 			OSReport("GX2_PROFILE_EVENTS bank=%u names=%s\n", BGFX_CONFIG_GX2_PROFILER,
 #if BGFX_CONFIG_GX2_PROFILER == 1
@@ -241,7 +241,7 @@ namespace bgfx { namespace gx2
 			}
 			static const char* byteNames[] = { "ListAllocated", "UniformAllocated", "ListBytes", "UniformBytes",
 				"VertexBytes", "IndexBytes", "BufferRenames", "PreserveBytes", "StageRenames", "StageAllocated",
-				"TextureSets", "ContextRestores" };
+				"TextureSets", "ContextRestores", "ScissorSets" };
 			for (uint32_t ii = 0; ii < BytesCount; ++ii) if (bytes[ii])
 				OSReport("GX2_PROFILE_COUNT name=%s value=%llu\n", byteNames[ii], (unsigned long long)bytes[ii]);
 			static const char* gpuNames[] = { "GRBM-total", "GRBM-active", "TCP-TCC-stall", "TCP-tag-stall",
