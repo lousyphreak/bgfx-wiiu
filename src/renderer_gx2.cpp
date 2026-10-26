@@ -643,6 +643,7 @@ namespace bgfx { namespace gx2
 				(uint8_t*)_buffer.block->data+(whole ? 0 : _offset), whole ? _buffer.size : _size); }
 		}
 
+		// Resource helpers run outside drawing; the next submit restores context.
 		void readBuffer(Handle _handle, void* _data, uint32_t _offset, uint32_t _size) override
 		{
 			Buffer& buffer = transferBuffer(_handle);
@@ -665,7 +666,6 @@ namespace bgfx { namespace gx2
 			output.deadline = m_transferFrame+1;
 			output.rowBytes = _size; output.pitch = _size; output.rows = 1;
 			m_transferOutputs.push_back(output);
-			if (m_context) restore();
 		}
 
 		void gpuBufferSource(Buffer& _buffer)
@@ -1603,7 +1603,6 @@ namespace bgfx { namespace gx2
 				Block* block = texture.renderImage ? texture.renderImage : texture.image;
 				if (block) touch(block);
 				if (texture.auxiliary) touch(texture.auxiliary);
-				if (m_context) restore();
 			}
 			else
 			{
@@ -2410,7 +2409,6 @@ namespace bgfx { namespace gx2
 			// publish F's result before its render semaphore is released (see .md).
 			output.deadline = m_transferFrame + 1;
 			transferQueueSurface(source, _mip, _layer, texture.format, output);
-			if (m_context) restore();
 		}
 
 
@@ -2424,7 +2422,6 @@ namespace bgfx { namespace gx2
 			output.kind = TransferOutput::ScreenShot;
 			output.path.assign(_filePath, _filePath+bx::strLen(_filePath)+1);
 			transferQueueSurface(source, mip, slice, format, output, &windowColor(*windowFor(_handle)));
-			if (m_context) restore();
 		}
 
 		// Call after all ordinary draws and debug text, once per submit, also when
@@ -2442,7 +2439,6 @@ namespace bgfx { namespace gx2
 					TransferOutput output;
 					output.kind = TransferOutput::CaptureFrame;
 					transferQueueSurface(source, mip, slice, format, output, &windowColor(m_mainWindow));
-					if (m_context) restore();
 				}
 			}
 			else if (m_captureRequested)
