@@ -3093,6 +3093,7 @@ namespace bgfx { namespace gx2
 
 		BX_NO_INLINE Fetch* createFetchShader(Program& _program, const RenderDraw& _draw, const uint32_t* layouts, uint32_t streamMask, uint16_t instanceStride, uint32_t gpuEndianMask)
 		{
+			GX2_PROFILE_ADD(FetchCreates, 1);
 			GX2VertexShader& shader = *(GX2VertexShader*)_program.vertex->header->data;
 			GX2AttribStream attributes[32];
 			uint32_t count = 0;
@@ -4688,7 +4689,10 @@ namespace bgfx { namespace gx2
 		{
 			Window* window = windowFor(_handle);
 			if (window) window->used = true;
-			restore(); bindFrameBuffer(_handle); beginBatch();
+			// Binding restores context only for a target switch or a native helper.
+			bindFrameBuffer(_handle); beginBatch();
+			depthControl({}); primitiveRestart(GX2_PRIMITIVE_MODE_TRIANGLES, 0);
+			if (m_sampleMask != UINT32_MAX) { GX2SetAAMask(0xff, 0xff, 0xff, 0xff); m_sampleMask = UINT32_MAX; }
 			GX2SetViewport(0, 0, m_targetWidth, m_targetHeight, -1, 1);
 			setScissor({0, 0, uint16_t(m_targetWidth), uint16_t(m_targetHeight)});
 			state(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A, 0, 0);
