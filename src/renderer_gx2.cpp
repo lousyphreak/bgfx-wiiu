@@ -3303,8 +3303,9 @@ namespace bgfx { namespace gx2
 					GX2SetBlendControl(GX2RenderTarget(ii), s_blend[factors & 15], s_blend[(factors >> 4) & 15], s_equation[eqRgb], TRUE,
 						s_blend[(factors >> 8) & 15], s_blend[(factors >> 12) & 15], s_equation[eqAlpha]);
 				}
-				GX2SetColorControl(GX2_LOGIC_OP_COPY, blendMask, FALSE, m_numColors != 0);
 				const uint32_t mask = colorWriteMask(_state);
+				GX2SetColorControl(GX2_LOGIC_OP_COPY, blendMask, FALSE, m_numColors != 0 && mask != 0);
+				GX2_PROFILE_ADD(ColorDisabledSets, m_numColors == 0 || mask == 0);
 				channelMasks(mask, (1u << m_numColors)-1);
 				GX2SetAlphaToMask(0 != (_state & BGFX_STATE_BLEND_ALPHA_TO_COVERAGE), GX2_ALPHA_TO_MASK_MODE_NON_DITHERED);
 				const float pointSize = float(bx::max<uint64_t>(1, (_state & BGFX_STATE_POINT_SIZE_MASK) >> BGFX_STATE_POINT_SIZE_SHIFT));
