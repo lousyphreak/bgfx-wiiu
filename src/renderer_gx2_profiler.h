@@ -70,6 +70,16 @@ namespace bgfx { namespace gx2
 
 #endif
 
+#if BGFX_CONFIG_GX2_PROFILER == 3
+		struct ThreadScope
+		{
+			uint64_t& sum;
+			uint64_t start = OSGetThreadCoreTime(OSGetCurrentThread(), 7);
+			ThreadScope(uint64_t& _sum) : sum(_sum) {}
+			~ThreadScope() { sum += OSGetThreadCoreTime(OSGetCurrentThread(), 7)-start; }
+		};
+#endif
+
 		void init()
 		{
 			bx::memSet(this, 0, sizeof(*this));
@@ -199,9 +209,14 @@ namespace bgfx { namespace gx2
 		void report(uint32_t _frame, bool _vsync)
 		{
 			std::sort(intervals, intervals+120);
-			OSReport("GX2_PROFILE_FRAME frame=%u n=120 vsync=%u cpuMs=%.6f frameMs=%.6f frame95=%.6f gpuMs=%.6f gpuN=%u\n",
+			OSReport("GX2_PROFILE_FRAME frame=%u n=120 vsync=%u cpuMs=%.6f frameMs=%.6f frame95=%.6f gpuMs=%.6f gpuN=%u draws=%.3f\n",
 				_frame, unsigned(_vsync), double(work)/62156.25/120, double(wall)/62156.25/120,
-				intervals[113], gpuFrames ? double(gpuTicks)/27000/gpuFrames : 0, gpuFrames);
+				intervals[113], gpuFrames ? double(gpuTicks)/27000/gpuFrames : 0, gpuFrames, double(draws)/120);
+#if BGFX_CONFIG_GX2_PROFILER == 3
+			OSReport("GX2_PROFILE_RENDER_CPU frame=%u submitMs=%.6f endFrameMs=%.6f flipMs=%.6f\n",
+				_frame, double(coarse[0])/62156.25/120, double(coarse[1])/62156.25/120, double(coarse[2])/62156.25/120);
+			coarse[0] = coarse[1] = coarse[2] = 0;
+#endif
 #if BGFX_CONFIG_GX2_PROFILER < 3
 			static const char* names[] = {
 				"ListAcquire", "UniformAcquire", "UniformFill", "UniformZero", "UniformInitial", "UniformApplication",
@@ -242,13 +257,16 @@ namespace bgfx { namespace gx2
 			bx::memSet(viewTicks, 0, sizeof(viewTicks)); bx::memSet(viewFrames, 0, sizeof(viewFrames));
 			gpuSamples = 0;
 #endif
-			frames = gpuFrames = 0; wall = work = gpuTicks = 0;
+			frames = gpuFrames = 0; wall = work = gpuTicks = draws = 0;
 		}
 
 		bool rendered[512] = {};
-		uint64_t lastWall = 0, lastCpu = 0, wall = 0, work = 0, gpuTicks = 0;
+		uint64_t lastWall = 0, lastCpu = 0, wall = 0, work = 0, gpuTicks = 0, draws = 0;
 		uint32_t frames = 0, gpuFrames = 0;
 		double intervals[120];
+#if BGFX_CONFIG_GX2_PROFILER == 3
+		uint64_t coarse[3] = {};
+#endif
 #if BGFX_CONFIG_GX2_PROFILER < 3
 		static constexpr GX2PerfCounter counterIds[] = { GX2_PERF_COUNTER_GRBM_0, GX2_PERF_COUNTER_GRBM_1,
 			GX2_PERF_COUNTER_TCP_0_0, GX2_PERF_COUNTER_TCP_1_0, GX2_PERF_COUNTER_TCP_2_0,
@@ -286,4 +304,10 @@ namespace bgfx { namespace gx2
 #define GX2_PROFILE_SCOPE(_phase)
 #define GX2_PROFILE_SCOPE_SELECT(_phase)
 #define GX2_PROFILE_ADD(_name, _value) do {} while (0)
+#endif
+
+#if BGFX_CONFIG_GX2_PROFILER == 3
+#define GX2_PROFILE_COARSE(_phase) Gx2Profiler::ThreadScope BX_CONCATENATE(gx2ProfileThread, __LINE__)(s_gx2Profiler.coarse[Gx2Profiler::_phase-Gx2Profiler::Submit])
+#else
+#define GX2_PROFILE_COARSE(_phase) GX2_PROFILE_SCOPE(_phase)
 #endif

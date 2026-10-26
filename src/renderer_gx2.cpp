@@ -453,7 +453,7 @@ namespace bgfx { namespace gx2
 
 		void endFrame(bool _willPresent) override
 		{
-			GX2_PROFILE_SCOPE(EndFrame);
+			GX2_PROFILE_COARSE(EndFrame);
 			transferPublish();
 			const bool present = _willPresent && preparePresent();
 			if (m_frameGpuTimer != UINT32_MAX)
@@ -471,7 +471,7 @@ namespace bgfx { namespace gx2
 
 		void flip() override
 		{
-			GX2_PROFILE_SCOPE(Flip);
+			GX2_PROFILE_COARSE(Flip);
 			bool present = m_mainWindow.used;
 			for (FrameBuffer& fb : m_frameBuffers) present |= fb.window.used;
 			if (!present) return;
@@ -4402,7 +4402,7 @@ namespace bgfx { namespace gx2
 		void submit(Frame* _render, const ClearQuad& _clearQuad, const MipGen& _mipGen, TextVideoMemBlitter& _blitter) override
 		{
 			GX2_PROFILE(begin(_render->m_frameNum, _render->m_numRenderItems != 0, 0 != (_render->m_reset & BGFX_RESET_VSYNC)));
-			GX2_PROFILE_SCOPE(Submit);
+			GX2_PROFILE_COARSE(Submit);
 			m_mipGen = &_mipGen; m_transferFrame = _render->m_frameNum; transferPublish();
 			Stats& stats = _render->m_perfStats;
 			stats.cpuTimeBegin = bx::getHPCounter(); stats.cpuTimerFreq = bx::getHPFrequency();
@@ -4666,6 +4666,7 @@ namespace bgfx { namespace gx2
 			else if (frameBufferAvailable(_render->m_debugFrameBuffer) && (_render->m_debug & BGFX_DEBUG_TEXT)) dbgTextSubmit(this, _blitter, _render->m_textVideoMem, _render->m_debugFrameBuffer, _render->m_debugTextScale);
 			transferCapture(0 != (_render->m_reset & BGFX_RESET_CAPTURE));
 			stats.cpuTimeEnd = bx::getHPCounter();
+			GX2_PROFILE(draws += stats.numDraw);
 		}
 
 		void dbgTextRenderBegin(TextVideoMemBlitter&, FrameBufferHandle _handle) override
