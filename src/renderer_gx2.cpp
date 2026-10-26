@@ -3027,16 +3027,30 @@ namespace bgfx { namespace gx2
 		void uniformsEnd(Program& _program)
 		{
 			GX2_PROFILE_SCOPE(UniformEnd);
-			// Snapshots are complete here. Skip the 256-byte alignment holes and release
-			// these GPU-only cache lines; endBatch orders all publications together.
+			// Only uniformsBegin appends snapshots. With the same program, the preceding
+			// allocation has the same stride; a batch restart has no predecessor.
+			const uint32_t stride = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				const uint32_t size = (stage ? _program.fragment : _program.vertex)->uniformSize;
-				if (size) { GX2_PROFILE_SCOPE(UniformPublish); DCFlushRangeNoSync(m_stageData[stage], size); }
-			}
-			{ GX2_PROFILE_SCOPE(UniformBind);
-				if (_program.vertex->uniformSize) GX2SetVertexUniformBlock(0, _program.vertex->uniformSize, m_stageData[0]);
-				if (_program.fragment->uniformSize) GX2SetPixelUniformBlock(0, _program.fragment->uniformSize, m_stageData[1]);
+				if (!size) continue;
+				// Compare one CPU cache line inline; larger blocks keep their original path.
+				const bool cacheable = size <= 32;
+				const bool reuse = cacheable && m_boundProgram == &_program && m_uploadUsed >= 2*stride
+					&& 0 == __builtin_memcmp(__builtin_assume_aligned(m_stageData[stage], 32),
+						__builtin_assume_aligned(m_stageData[stage]-stride, 32), 16)
+					&& 0 == __builtin_memcmp(__builtin_assume_aligned(m_stageData[stage]+16, 16),
+						__builtin_assume_aligned(m_stageData[stage]-stride+16, 16), 16);
+				{ GX2_PROFILE_SCOPE(UniformPublish);
+					if (cacheable) DCStoreRangeNoSync(m_stageData[stage], size);
+					else DCFlushRangeNoSync(m_stageData[stage], size);
+				}
+				if (reuse) { GX2_PROFILE_ADD(UniformReuses, 1); continue; }
+				{ GX2_PROFILE_SCOPE(UniformBind);
+					GX2_PROFILE_ADD(UniformBinds, 1);
+					if (stage) GX2SetPixelUniformBlock(0, size, m_stageData[stage]);
+					else GX2SetVertexUniformBlock(0, size, m_stageData[stage]);
+				}
 			}
 			if (m_boundProgram != &_program)
 			{
