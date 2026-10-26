@@ -3126,7 +3126,7 @@ namespace bgfx { namespace gx2
 			Fetch* fetch = NULL;
 			for (Fetch& candidate : _program.fetches)
 				if (candidate.streamMask == streamMask && candidate.instanceStride == instanceStride && candidate.gpuEndianMask == gpuEndianMask
-				&& 0 == bx::memCmp(layouts, candidate.layouts, sizeof(layouts))) { fetch = &candidate; break; }
+				&& 0 == __builtin_memcmp(layouts, candidate.layouts, sizeof(layouts))) { fetch = &candidate; break; }
 			if (!fetch)
 			{
 				GX2VertexShader& shader = *(GX2VertexShader*)_program.vertex->header->data;
