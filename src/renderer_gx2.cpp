@@ -4559,16 +4559,20 @@ namespace bgfx { namespace gx2
 			UniformCacheState ucs(_render);
 			ViewState viewState(_render);
 			uint16_t view = UINT16_MAX;
+			// Frame view metadata stays immutable throughout this submission.
+			const View* currentView = NULL;
 			beginBatch();
 			for (uint32_t item = 0; item < _render->m_numRenderItems; ++item)
 			{
 				GX2_PROFILE_SCOPE(DrawLoop);
 				SortKey key;
 				const bool compute = key.decode(_render->m_sortKeys[item], _render->m_viewRemap);
-				const View& renderView = _render->view(key.m_view);
+				GX2_PROFILE_ADD(DrawViewLookups, view != key.m_view);
+				const View& renderView = view == key.m_view ? *currentView : _render->view(key.m_view);
 				if (!frameBufferAvailable(renderView.m_fbh)) continue;
 				if (view != key.m_view)
 				{
+					currentView = &renderView;
 					endViewTimer(_render, viewTimer); viewTimer = UINT32_MAX;
 					view = key.m_view;
 					Window* window = windowFor(renderView.m_fbh);
