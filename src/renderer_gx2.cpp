@@ -3228,8 +3228,11 @@ namespace bgfx { namespace gx2
 			const bool invalid = m_cachedState == UINT64_MAX;
 			const bool multisample = 0 != (_state & BGFX_STATE_MSAA);
 			rasterSamples(multisample, multisample && _sampleFrequency);
+			// Alpha reference, topology and MSAA are applied outside this state group.
+			_state &= ~(BGFX_STATE_ALPHA_REF_MASK | BGFX_STATE_PT_MASK | BGFX_STATE_MSAA);
 			if (_state != m_cachedState || _stencil != m_cachedStencil || _wireframe != m_wireframe || ((_state & BGFX_STATE_BLEND_INDEPENDENT) && _rgba != m_cachedRgba))
 			{
+				GX2_PROFILE_ADD(PipelineSets, 1);
 				const uint32_t front = unpackStencil(0, _stencil);
 				const bool separate = stencilFrontAndBack(_stencil);
 				const uint32_t back = separate ? unpackStencil(1, _stencil) : front;
