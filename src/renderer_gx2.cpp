@@ -3091,6 +3091,77 @@ namespace bgfx { namespace gx2
 			return stream;
 		}
 
+		BX_NO_INLINE Fetch* createFetchShader(Program& _program, const RenderDraw& _draw, const uint32_t* layouts, uint32_t streamMask, uint16_t instanceStride, uint32_t gpuEndianMask)
+		{
+			GX2VertexShader& shader = *(GX2VertexShader*)_program.vertex->header->data;
+			GX2AttribStream attributes[32];
+			uint32_t count = 0;
+			for (uint32_t ii = 0; ii < shader.attribVarCount; ++ii)
+			{
+				const GX2AttribVar& var = shader.attribVars[ii];
+				bool found = false;
+				for (uint32_t ss = 0; ss < BGFX_CONFIG_MAX_VERTEX_STREAMS && !found; ++ss)
+				{
+					if (0 == (streamMask & (1<<ss))) continue;
+					const Stream& stream = _draw.m_stream[ss];
+					const Buffer& buffer = m_vertexBuffers[stream.m_handle.idx];
+					const VertexLayout& layout = m_layouts[isValid(stream.m_layoutHandle) ? stream.m_layoutHandle.idx : buffer.layout.idx];
+					for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
+						if (layout.has(Attrib::Enum(aa)) && 0 == bx::strCmp(var.name, s_attribName[aa]))
+						{ attributes[count] = attribute(var, layout, Attrib::Enum(aa), ss);
+							if (buffer.littleEndian) attributes[count].endianSwap = GX2_ENDIAN_SWAP_NONE;
+							++count; found = true; break; }
+				}
+				for (uint32_t jj = 0; !found && jj < instanceStride/16; ++jj)
+				{
+					char name[24]; bx::snprintf(name, sizeof(name), "i_data%d", jj);
+					if (0 == bx::strCmp(name, var.name))
+					{
+						GX2AttribStream stream = {};
+						stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS;
+						stream.offset = jj*16; stream.format = GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32;
+						stream.type = GX2_ATTRIB_INDEX_PER_INSTANCE; stream.aluDivisor = 1;
+						stream.mask = GX2_SEL_MASK(0, 1, 2, 3); stream.endianSwap = (gpuEndianMask & (1u << BGFX_CONFIG_MAX_VERTEX_STREAMS)) ? GX2_ENDIAN_SWAP_NONE : GX2_ENDIAN_SWAP_8_IN_32;
+						attributes[count++] = stream; found = true;
+					}
+				}
+				if (!found)
+				{
+					// Pinned backends source missing attributes at offset zero of the last stream.
+					if (streamMask)
+					{
+						const uint32_t ss = 31-bx::countLeadingZeros(streamMask);
+						for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
+							if (0 == bx::strCmp(var.name, s_attribName[aa]))
+							{
+								const bool bytes = aa >= Attrib::Color0 && aa <= Attrib::Indices;
+								VertexLayout layout;
+								layout.begin().add(Attrib::Enum(aa), bytes ? 4 : aa >= Attrib::TexCoord0 ? 2 : 3,
+									bytes ? AttribType::Uint8 : AttribType::Float).end();
+								attributes[count] = attribute(var, layout, Attrib::Enum(aa), ss);
+								if (gpuEndianMask & (1u << ss)) attributes[count].endianSwap = GX2_ENDIAN_SWAP_NONE;
+								++count; found = true; break;
+							}
+					}
+					if (found) continue;
+					GX2AttribStream stream = {};
+					stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS+1;
+					stream.format = GX2_ATTRIB_FORMAT_FLOAT_32; stream.type = GX2_ATTRIB_INDEX_PER_VERTEX;
+					stream.mask = GX2_SEL_MASK(4, 4, 4, 5);
+					attributes[count++] = stream;
+				}
+			}
+			Fetch native = {};
+			bx::memCopy(native.layouts, layouts, sizeof(native.layouts));
+			native.streamMask = streamMask; native.instanceStride = instanceStride; native.gpuEndianMask = gpuEndianMask;
+			const uint32_t size = GX2CalcFetchShaderSizeEx(count, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
+			native.program = allocate(size, GX2_SHADER_PROGRAM_ALIGNMENT);
+			GX2InitFetchShaderEx(&native.shader, (uint8_t*)native.program->data, count, attributes, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, native.program->data, size);
+			_program.fetches.push_back(native);
+			return &_program.fetches.back();
+		}
+
 		void vertexInput(Program& _program, const RenderDraw& _draw)
 		{
 			GX2_PROFILE_SCOPE(VertexInput);
@@ -3127,75 +3198,7 @@ namespace bgfx { namespace gx2
 			for (Fetch& candidate : _program.fetches)
 				if (candidate.streamMask == streamMask && candidate.instanceStride == instanceStride && candidate.gpuEndianMask == gpuEndianMask
 				&& 0 == __builtin_memcmp(layouts, candidate.layouts, sizeof(layouts))) { fetch = &candidate; break; }
-			if (!fetch)
-			{
-				GX2VertexShader& shader = *(GX2VertexShader*)_program.vertex->header->data;
-				GX2AttribStream attributes[32];
-				uint32_t count = 0;
-				for (uint32_t ii = 0; ii < shader.attribVarCount; ++ii)
-				{
-					const GX2AttribVar& var = shader.attribVars[ii];
-					bool found = false;
-					for (uint32_t ss = 0; ss < BGFX_CONFIG_MAX_VERTEX_STREAMS && !found; ++ss)
-					{
-						if (0 == (streamMask & (1<<ss))) continue;
-						const Stream& stream = _draw.m_stream[ss];
-						const Buffer& buffer = m_vertexBuffers[stream.m_handle.idx];
-						const VertexLayout& layout = m_layouts[isValid(stream.m_layoutHandle) ? stream.m_layoutHandle.idx : buffer.layout.idx];
-						for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
-							if (layout.has(Attrib::Enum(aa)) && 0 == bx::strCmp(var.name, s_attribName[aa]))
-							{ attributes[count] = attribute(var, layout, Attrib::Enum(aa), ss);
-								if (buffer.littleEndian) attributes[count].endianSwap = GX2_ENDIAN_SWAP_NONE;
-								++count; found = true; break; }
-					}
-					for (uint32_t jj = 0; !found && jj < instanceStride/16; ++jj)
-					{
-						char name[24]; bx::snprintf(name, sizeof(name), "i_data%d", jj);
-						if (0 == bx::strCmp(name, var.name))
-						{
-							GX2AttribStream stream = {};
-							stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS;
-							stream.offset = jj*16; stream.format = GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32;
-							stream.type = GX2_ATTRIB_INDEX_PER_INSTANCE; stream.aluDivisor = 1;
-							stream.mask = GX2_SEL_MASK(0, 1, 2, 3); stream.endianSwap = (gpuEndianMask & (1u << BGFX_CONFIG_MAX_VERTEX_STREAMS)) ? GX2_ENDIAN_SWAP_NONE : GX2_ENDIAN_SWAP_8_IN_32;
-							attributes[count++] = stream; found = true;
-						}
-					}
-					if (!found)
-					{
-						// Pinned backends source missing attributes at offset zero of the last stream.
-						if (streamMask)
-						{
-							const uint32_t ss = 31-bx::countLeadingZeros(streamMask);
-							for (uint32_t aa = 0; aa < Attrib::Count; ++aa)
-								if (0 == bx::strCmp(var.name, s_attribName[aa]))
-								{
-									const bool bytes = aa >= Attrib::Color0 && aa <= Attrib::Indices;
-									VertexLayout layout;
-									layout.begin().add(Attrib::Enum(aa), bytes ? 4 : aa >= Attrib::TexCoord0 ? 2 : 3,
-										bytes ? AttribType::Uint8 : AttribType::Float).end();
-									attributes[count] = attribute(var, layout, Attrib::Enum(aa), ss);
-									if (gpuEndianMask & (1u << ss)) attributes[count].endianSwap = GX2_ENDIAN_SWAP_NONE;
-									++count; found = true; break;
-								}
-						}
-						if (found) continue;
-						GX2AttribStream stream = {};
-						stream.location = var.location; stream.buffer = BGFX_CONFIG_MAX_VERTEX_STREAMS+1;
-						stream.format = GX2_ATTRIB_FORMAT_FLOAT_32; stream.type = GX2_ATTRIB_INDEX_PER_VERTEX;
-						stream.mask = GX2_SEL_MASK(4, 4, 4, 5);
-						attributes[count++] = stream;
-					}
-				}
-				Fetch native = {};
-				bx::memCopy(native.layouts, layouts, sizeof(layouts));
-				native.streamMask = streamMask; native.instanceStride = instanceStride; native.gpuEndianMask = gpuEndianMask;
-				const uint32_t size = GX2CalcFetchShaderSizeEx(count, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
-				native.program = allocate(size, GX2_SHADER_PROGRAM_ALIGNMENT);
-				GX2InitFetchShaderEx(&native.shader, (uint8_t*)native.program->data, count, attributes, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
-				GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, native.program->data, size);
-				_program.fetches.push_back(native); fetch = &_program.fetches.back();
-			}
+			if (!fetch) fetch = createFetchShader(_program, _draw, layouts, streamMask, instanceStride, gpuEndianMask);
 			if (m_boundFetch != fetch->program)
 			{
 				GX2SetFetchShader(&fetch->shader); m_boundFetch = fetch->program;
