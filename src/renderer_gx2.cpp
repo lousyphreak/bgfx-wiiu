@@ -3067,25 +3067,27 @@ namespace bgfx { namespace gx2
 					else GX2SetVertexUniformBlock(0, size, m_stageData[stage]);
 				}
 			}
-			if (m_boundProgram != &_program)
+			if (m_boundProgram != &_program) bindProgram(_program);
+		}
+
+		BX_NO_INLINE void bindProgram(Program& _program)
+		{
+			Block* header = _program.primitiveId ? _program.vertex->primitiveHeader : _program.vertex->header;
+			Block* code = _program.primitiveId ? _program.vertex->primitiveProgram : _program.vertex->program;
+			GX2SetVertexShader((const GX2VertexShader*)header->data);
+			if (!m_boundProgram || m_boundProgram->primitiveId != _program.primitiveId)
 			{
-				Block* header = _program.primitiveId ? _program.vertex->primitiveHeader : _program.vertex->header;
-				Block* code = _program.primitiveId ? _program.vertex->primitiveProgram : _program.vertex->program;
-				GX2SetVertexShader((const GX2VertexShader*)header->data);
-				if (!m_boundProgram || m_boundProgram->primitiveId != _program.primitiveId)
-				{
-					const uint32_t mode = _program.primitiveId ? 1 : 0;
-					alignas(64) const uint32_t registers[] = {
-						UINT32_C(0xc0016900), 0x290, mode, // VGT_GS_MODE: scenario A or off.
-						UINT32_C(0xc0016900), 0x2ad, mode, // VGT_REUSE_OFF: per-primitive vertex results.
-					};
-					GX2CopyDisplayList(registers, sizeof(registers));
-				}
-				GX2SetPixelShader((const GX2PixelShader*)_program.fragment->header->data);
-				touch(code); touch(header);
-				touch(_program.fragment->program); touch(_program.fragment->header);
-				m_boundProgram = &_program;
+				const uint32_t mode = _program.primitiveId ? 1 : 0;
+				alignas(64) const uint32_t registers[] = {
+					UINT32_C(0xc0016900), 0x290, mode, // VGT_GS_MODE: scenario A or off.
+					UINT32_C(0xc0016900), 0x2ad, mode, // VGT_REUSE_OFF: per-primitive vertex results.
+				};
+				GX2CopyDisplayList(registers, sizeof(registers));
 			}
+			GX2SetPixelShader((const GX2PixelShader*)_program.fragment->header->data);
+			touch(code); touch(header);
+			touch(_program.fragment->program); touch(_program.fragment->header);
+			m_boundProgram = &_program;
 		}
 
 		GX2AttribStream attribute(const GX2AttribVar& _var, const VertexLayout& _layout, Attrib::Enum _attr, uint32_t _stream)
