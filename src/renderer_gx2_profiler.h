@@ -108,7 +108,7 @@ namespace bgfx { namespace gx2
 				double(calibration.ticks)/62.15625, double(OSGetSystemTime()-start)/62.15625);
 			calibration = {};
 #endif
-			OSReport("GX2_PROFILE_INIT mode=%u cpuTimebase=62156250 gpuTimebase=27000000\n", BGFX_CONFIG_GX2_PROFILER);
+			OSReport("GX2_PROFILE_INIT mode=%u core=%u cpuTimebase=62156250 gpuTimebase=27000000\n", BGFX_CONFIG_GX2_PROFILER, OSGetCoreId());
 		}
 
 		void finish()
@@ -213,9 +213,9 @@ namespace bgfx { namespace gx2
 				_frame, unsigned(_vsync), double(work)/62156.25/120, double(wall)/62156.25/120,
 				intervals[59], intervals[113], intervals[118], intervals[119], gpuFrames ? double(gpuTicks)/27000/gpuFrames : 0, gpuFrames, double(draws)/120);
 #if BGFX_CONFIG_GX2_PROFILER == 3
-			OSReport("GX2_PROFILE_RENDER_CPU frame=%u submitMs=%.6f endFrameMs=%.6f flipMs=%.6f\n",
-				_frame, double(coarse[0])/62156.25/120, double(coarse[1])/62156.25/120, double(coarse[2])/62156.25/120);
-			coarse[0] = coarse[1] = coarse[2] = 0;
+			OSReport("GX2_PROFILE_RENDER_CPU frame=%u submitMs=%.6f endFrameMs=%.6f flipMs=%.6f sortMs=%.6f\n",
+				_frame, double(coarse[0])/62156.25/120, double(coarse[1])/62156.25/120, double(coarse[2])/62156.25/120, double(sortCpu)/62156.25/120);
+			coarse[0] = coarse[1] = coarse[2] = sortCpu = 0;
 #endif
 #if BGFX_CONFIG_GX2_PROFILER < 3
 			static const char* names[] = {
@@ -265,7 +265,7 @@ namespace bgfx { namespace gx2
 		uint32_t frames = 0, gpuFrames = 0;
 		double intervals[120];
 #if BGFX_CONFIG_GX2_PROFILER == 3
-		uint64_t coarse[3] = {};
+		uint64_t coarse[3] = {}, sortCpu = 0;
 #endif
 #if BGFX_CONFIG_GX2_PROFILER < 3
 		static constexpr GX2PerfCounter counterIds[] = { GX2_PERF_COUNTER_GRBM_0, GX2_PERF_COUNTER_GRBM_1,
@@ -310,4 +310,10 @@ namespace bgfx { namespace gx2
 #define GX2_PROFILE_COARSE(_phase) Gx2Profiler::ThreadScope BX_CONCATENATE(gx2ProfileThread, __LINE__)(s_gx2Profiler.coarse[Gx2Profiler::_phase-Gx2Profiler::Submit])
 #else
 #define GX2_PROFILE_COARSE(_phase) GX2_PROFILE_SCOPE(_phase)
+#endif
+
+#if BGFX_CONFIG_GX2_PROFILER == 3
+#define GX2_PROFILE_SORT() Gx2Profiler::ThreadScope gx2SortScope(s_gx2Profiler.sortCpu)
+#else
+#define GX2_PROFILE_SORT() GX2_PROFILE_SCOPE(Sort)
 #endif

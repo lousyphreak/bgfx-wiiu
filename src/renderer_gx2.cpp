@@ -4565,7 +4565,7 @@ namespace bgfx { namespace gx2
 			}
 			if (_render->m_iboffset) update(m_indexBuffers[_render->m_transientIb->handle.idx], 0, _render->m_iboffset, _render->m_transientIb->data, false, true);
 			if (_render->m_vboffset) update(m_vertexBuffers[_render->m_transientVb->handle.idx], 0, _render->m_vboffset, _render->m_transientVb->data, true, true);
-			{ GX2_PROFILE_SCOPE(Sort); _render->sort(); }
+			{ GX2_PROFILE_SORT(); _render->sort(); }
 			uint32_t exportBytes = 0;
 			bool hasGraphicsImages = false;
 			{
