@@ -4293,6 +4293,7 @@ namespace bgfx { namespace gx2
 			Block* commands = gpuBufferAllocate(_bytes);
 			DCInvalidateRange(commands->data, commands->size); // GPU-only; never CPU-write the payload.
 			_params[2][0] = OSEffectiveToPhysical(uint32_t(uintptr_t(commands->data)));
+			GX2SetContextState(m_context);
 			GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
 			GX2SetComputeShader((const GX2ComputeShader*)shader.header->data);
 			Binding args;
