@@ -2995,11 +2995,12 @@ namespace bgfx { namespace gx2
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
+				if (!shader.uniformSize) continue;
 				m_stageData[stage] = (uint8_t*)m_uploads.block->data + m_uploadOffset + m_uploadUsed;
 				// A fresh snapshot has no CPU contents to preserve. dcbz allocates its
 				// cache blocks without fetching the previous GPU-only bytes from MEM2.
 				GX2_PROFILE_ADD(UniformBytes, shader.uniformSize);
-				if (shader.uniformSize) { GX2_PROFILE_SCOPE(UniformZero); DCZeroRange(m_stageData[stage], shader.uniformSize); }
+				{ GX2_PROFILE_SCOPE(UniformZero); DCZeroRange(m_stageData[stage], shader.uniformSize); }
 				m_uploadUsed += bx::alignUp(shader.uniformSize, 256);
 				const GX2VertexShader* vertex = (const GX2VertexShader*)shader.header->data;
 				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
