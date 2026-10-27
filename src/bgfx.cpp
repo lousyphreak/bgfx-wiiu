@@ -3806,7 +3806,7 @@ namespace bgfx
 		{ gl::rendererCreate,     gl::rendererDestroy,     BGFX_RENDERER_OPENGL_NAME,     !!BGFX_CONFIG_RENDERER_OPENGL     }, // OpenGL
 		{ vk::rendererCreate,     vk::rendererDestroy,     BGFX_RENDERER_VULKAN_NAME,     !!BGFX_CONFIG_RENDERER_VULKAN     }, // Vulkan
 		{ wgpu::rendererCreate,   wgpu::rendererDestroy,   BGFX_RENDERER_WEBGPU_NAME,     !!BGFX_CONFIG_RENDERER_WEBGPU     }, // WebGPU
-		{ gx2::rendererCreate, gx2::rendererDestroy, "GX2", !!BGFX_CONFIG_RENDERER_GX2 },
+		{ gx2::rendererCreate, gx2::rendererDestroy, "WiiU", !!BGFX_CONFIG_RENDERER_GX2 },
 	};
 	BX_PRAGMA_DIAGNOSTIC_POP();
 	static_assert(BX_COUNTOF(s_rendererCreator) == RendererType::Count);

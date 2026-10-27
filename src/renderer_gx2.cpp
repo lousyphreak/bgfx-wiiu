@@ -384,7 +384,7 @@ namespace bgfx { namespace gx2
 		}
 
 		RendererType::Enum getRendererType() const override { return RendererType::Gx2; }
-		const char* getRendererName() const override { return "GX2"; }
+		const char* getRendererName() const override { return "WiiU"; }
 		bool isDeviceRemoved() override { return false; }
 
 		Block* allocate(uint32_t _size, uint32_t _alignment = 64)

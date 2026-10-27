@@ -314,7 +314,11 @@ void showExampleDialog(entry::AppI* _app, const char* _errorText)
 			, BX_COUNTOF(rendererHeader)
 			, "Renderer: %s / %s###gpu-choice"
 			, bgfx::getRendererName(bgfx::getRendererType() )
+#if BX_PLATFORM_WIIU
+			, caps->rendererType == bgfx::RendererType::Gx2 ? "GX2" : getPciIdName(caps->vendorId)
+#else
 			, getPciIdName(caps->vendorId)
+#endif // BX_PLATFORM_WIIU
 			);
 	}
 
