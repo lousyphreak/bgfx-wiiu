@@ -4663,9 +4663,8 @@ namespace bgfx { namespace gx2
 					if (dispatch.m_uniformBegin < dispatch.m_uniformEnd)
 						rendererUpdateUniforms(this, _render->m_uniformBuffer[dispatch.m_uniformIdx], dispatch.m_uniformBegin, dispatch.m_uniformEnd);
 					if (_render->m_debug & BGFX_DEBUG_IFH) continue;
-					endBatch(); finishRenderPass();
 					graphicsImagesConsume(images, exports, kInvalidHandle, true);
-					endBatch();
+					endBatch(); finishRenderPass();
 					bindComputeExports(exports);
 					dispatchCompute(m_programs[key.m_program.idx], dispatch, _render->m_renderBind[dispatch.m_bindIdx], exports, _render->m_colorPalette, viewState, _render, view, renderView);
 					++stats.numCompute;
