@@ -4753,9 +4753,16 @@ namespace bgfx { namespace gx2
 					if (program.m_numPredefined == 1 && (program.m_predefined[0].m_type & ~kUniformFragmentBit) == PredefinedUniform::ModelViewProj)
 					{
 						const PredefinedUniform& uniform = program.m_predefined[0];
-						Matrix4 mvp;
-						multiplyMatrixPaired(mvp.un.val, _render->m_frameCache.m_matrixCache.at(draw.m_startMatrix).un.val, viewState.m_viewProj.un.val);
-						setShaderUniform4x4f(uniform.m_type & kUniformFragmentBit, uniform.m_loc, mvp.un.val, bx::min<uint16_t>(4, uniform.m_count));
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+						float* mvp = (float*)(m_stageData[0 != (uniform.m_type & kUniformFragmentBit)]+uniform.m_loc*4);
+#else
+						Matrix4 storage;
+						float* mvp = storage.un.val;
+#endif
+						multiplyMatrixPaired(mvp, _render->m_frameCache.m_matrixCache.at(draw.m_startMatrix).un.val, viewState.m_viewProj.un.val);
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+						setShaderUniform4x4f(uniform.m_type & kUniformFragmentBit, uniform.m_loc, mvp, bx::min<uint16_t>(4, uniform.m_count));
+#endif
 					}
 					else viewState.setPredefined<4>(this, view, renderView, program, _render, draw);
 				}
