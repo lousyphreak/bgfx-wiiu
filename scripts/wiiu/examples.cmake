@@ -13,7 +13,7 @@ file(GLOB imgui_sources CONFIGURE_DEPENDS "${BGFX_DIR}/3rdparty/dear-imgui/*.cpp
 file(GLOB meshoptimizer_sources CONFIGURE_DEPENDS "${BGFX_DIR}/3rdparty/meshoptimizer/src/*.cpp")
 add_library(example-common STATIC
     ${common_dir}/entry/entry.cpp
-    ${common_dir}/entry/entry_wiiu.cpp
+    ${common_dir}/entry/entry_sdl3.cpp
     ${common_dir}/entry/cmd.cpp
     ${common_dir}/entry/input.cpp
     ${common_dir}/entry/dialog.cpp
@@ -25,6 +25,7 @@ add_library(example-common STATIC
     ${meshoptimizer_sources})
 target_include_directories(example-common PUBLIC "${common_dir}" PRIVATE "${BGFX_DIR}/3rdparty")
 target_link_libraries(example-common PUBLIC bgfx SDL3::SDL3)
+target_compile_definitions(example-common PUBLIC ENTRY_CONFIG_USE_SDL3=1)
 target_compile_options(example-common PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(example-common PUBLIC USE_ENTRY=1 ENTRY_CONFIG_IMPLEMENT_MAIN=1
     IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS)

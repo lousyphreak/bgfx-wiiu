@@ -16,6 +16,11 @@ newoption {
 }
 
 newoption {
+	trigger = "with-sdl3",
+	description = "Enable SDL3 entry (Linux and Wii U).",
+}
+
+newoption {
 	trigger = "with-glfw",
 	description = "Enable GLFW entry.",
 }
@@ -249,6 +254,11 @@ function exampleProjectDefaults()
 			libdirs { "$(SDL2_DIR)/lib" }
 
 		configuration {}
+	end
+
+	if _OPTIONS["with-sdl3"] then
+		defines { "ENTRY_CONFIG_USE_SDL3=1" }
+		links { "SDL3" }
 	end
 
 	if _OPTIONS["with-glfw"] then

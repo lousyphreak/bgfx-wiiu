@@ -11,7 +11,6 @@
 struct GX2ColorBuffer;
 struct GX2DepthBuffer;
 struct GX2Texture;
-struct GX2ContextState;
 
 namespace bgfx
 {
@@ -44,55 +43,20 @@ namespace bgfx
 		uint64_t getHandle() const { return uint64_t(uintptr_t(this)) | 1; }
 	};
 
-	/// Borrowed SDL/WUT target, queried on the application's main thread each frame.
-	/// Returning false (or null pointers) suspends drawing and presentation.
-	struct Gx2Target
-	{
-		GX2ColorBuffer* color;
-		GX2ContextState* context;
-		// Optional foreground MEM1 expansion heap. The adapter must register the
-		// release callback below before allowing allocations from it.
-		void* frameBufferHeap = NULL;
-	};
-
-	/// Pass one descriptor per native window as SwapChain::nwh, including the
-	/// main Init::swapChain; keep it and userData alive
-	/// until shutdown. GX2 must already be initialized. Use inline rendering
-	/// (BGFX_CONFIG_MULTITHREADED=0); Wii U builds always present after rendering.
-	/// query reads current availability, not a cached foreground generation.
-	/// Before withdrawing targets, the host drains preceding GPU work; SDL does
-	/// this on foreground release. bgfx shutdown then frees storage without GX2 calls.
-	/// present must submit preceding bgfx work before returning. presentColor must
-	/// also submit its scan copy before returning, because its source is bgfx-owned.
-	/// SDL_WIIU_SwapWindow provides these submissions and retains swap coordination.
-	/// When using separate TV/DRC windows, touch/render both each frame so SDL can
-	/// complete its shared swap. A mirrored SDL window needs one callback.
-	/// Process SDL lifecycle events before bgfx::frame; only issue GPU resource
-	/// commands while foreground-ready. Shut bgfx down before SDL.
-	/// The RGBA8 adapter owns presentation dimensions/format and scan buffers.
-	/// bgfx supplies requested 2x/4x/8x MSAA with a retained color target when needed.
-	/// An external-color adapter returns a layout-only target and presents the bgfx
-	/// color directly. Its release callback must run after a GPU drain and before
-	/// the MEM1 heap is destroyed, including window/output reconfiguration. Window
-	/// depth/Hi-Z, color and auxiliary storage prefer MEM1, with MEM2 fallback when
-	/// the requested surfaces exceed its available capacity. Depth has priority.
-	/// For headless rendering, leave Init::swapChain.nwh null and width/height zero.
-	/// bgfx owns an aligned GX2 context state, but GX2 must already be initialized
-	/// by SDL/the host. Only explicit offscreen framebuffers are drawable; frames
-	/// flush without presenting. This does not initialize or shut down the GX2 SDK.
+	/// Immutable native output identity supplied as SwapChain::nwh. SDL and other
+	/// hosts retain window/input metadata only; bgfx owns the entire GX2 session.
+	/// display 0 is TV, display 1 is DRC. Without a DRC swapchain, TV is mirrored.
+	/// renderCore selects the internal render worker's core at thread creation.
+	/// -1 selects core 0 for a worker; inline mode stays on the calling core.
 	struct Gx2PlatformData
 	{
-		void* userData;
-		bool (*query)(void* userData, Gx2Target* target);
-		void (*present)(void* userData);
-		// Optional direct scanout from a bgfx-owned color buffer. With this hook,
-		// the host color describes layout only; any host image remains host-owned.
-		// A layout-only descriptor with surface.image == NULL is also valid.
-		// The host retains scan-buffer ownership and resolves MSAA during its copy.
-		void (*presentColor)(void* userData, const GX2ColorBuffer* color) = NULL;
-		// Called after the host's foreground GPU drain, before its heap is freed.
-		// Register NULL to detach. Callbacks must not issue GX2 commands.
-		void (*setReleaseCallback)(void* userData, void (*release)(void*), void* renderer) = NULL;
+		uint32_t display = 0;
+		int32_t renderCore = -1;
 	};
+
+	/// API-thread foreground transition. Suspension completes queued CPU/GPU work
+	/// and releases foreground storage before returning. Resume clears suspension;
+	/// the next rendering frame recreates its presentation resources.
+	void gx2Suspend(bool _suspend);
 }
 #endif

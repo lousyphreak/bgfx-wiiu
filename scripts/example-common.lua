@@ -73,6 +73,10 @@ project ("example-common")
 		}
 	end
 
+	if _OPTIONS["with-sdl3"] then
+		defines { "ENTRY_CONFIG_USE_SDL3=1" }
+	end
+
 	if _OPTIONS["with-glfw"] then
 		defines {
 			"ENTRY_CONFIG_USE_GLFW=1",

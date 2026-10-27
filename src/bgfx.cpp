@@ -7,9 +7,15 @@
 
 #include "bgfx_p.h"
 #include <bgfx/embedded_shader.h>
+#if BX_PLATFORM_WIIU
+#include <bgfx/platform_gx2.h>
+#endif
 #include <bx/file.h>
 #include <bx/mutex.h>
 #include <bx/superluminal.h>
+#if BX_PLATFORM_WIIU && BGFX_CONFIG_MULTITHREADED
+#include <atomic>
+#endif
 
 #include "topology.h"
 
@@ -42,11 +48,11 @@ namespace bgfx
 
 #	define BGFX_CHECK_API_THREAD()                                   \
 		BX_ASSERT(NULL != s_ctx, "Library is not initialized yet."); \
-		BX_ASSERT(BGFX_API_THREAD_MAGIC == s_threadIndex, "Must be called from main thread.")
+		BX_ASSERT(BGFX_API_THREAD_MAGIC == getThreadIndex(), "Must be called from main thread.")
 
 #	define BGFX_CHECK_RENDER_THREAD()                         \
 		BX_ASSERT( (NULL != s_ctx && s_ctx->m_singleThreaded) \
-			|| ~BGFX_API_THREAD_MAGIC == s_threadIndex        \
+			|| ~BGFX_API_THREAD_MAGIC == getThreadIndex()    \
 			, "Must be called from render thread."            \
 			)
 
@@ -310,11 +316,36 @@ namespace bgfx
 
 	Caps g_caps;
 
+#if BX_PLATFORM_WIIU && BGFX_CONFIG_MULTITHREADED
+	// Only API/render roles use this marker. Identify those two threads without
+	// executable TLS relocations or reserving an application's native TLS slot.
+	static std::atomic<uint32_t> s_apiThread(0), s_renderThread(0);
+	static uint32_t getThreadIndex()
+	{
+		const uint32_t thread = bx::getTid();
+		if (thread == s_apiThread.load(std::memory_order_relaxed)) return BGFX_API_THREAD_MAGIC;
+		return thread == s_renderThread.load(std::memory_order_relaxed) ? ~BGFX_API_THREAD_MAGIC : 0;
+	}
+	static void setThreadIndex(uint32_t _index)
+	{
+		const uint32_t thread = bx::getTid();
+		if (_index == BGFX_API_THREAD_MAGIC) s_apiThread.store(thread, std::memory_order_relaxed);
+		else if (_index == ~BGFX_API_THREAD_MAGIC) s_renderThread.store(thread, std::memory_order_relaxed);
+		else
+		{
+			if (thread == s_apiThread.load(std::memory_order_relaxed)) s_apiThread.store(0, std::memory_order_relaxed);
+			if (thread == s_renderThread.load(std::memory_order_relaxed)) s_renderThread.store(0, std::memory_order_relaxed);
+		}
+	}
+#else
 #if BGFX_CONFIG_MULTITHREADED
 	static BX_THREAD_LOCAL uint32_t s_threadIndex(0);
 #else
 	static uint32_t s_threadIndex(0);
 #endif // BGFX_CONFIG_MULTITHREADED
+	static uint32_t getThreadIndex() { return s_threadIndex; }
+	static void setThreadIndex(uint32_t _index) { s_threadIndex = _index; }
+#endif
 
 	static Context* s_ctx = NULL;
 
@@ -1988,7 +2019,7 @@ namespace bgfx
 			if (NULL == s_ctx)
 			{
 				s_renderFrameCalled = true;
-				s_threadIndex = ~BGFX_API_THREAD_MAGIC;
+				setThreadIndex(~BGFX_API_THREAD_MAGIC);
 				return RenderFrame::NoContext;
 			}
 
@@ -2614,14 +2645,19 @@ namespace bgfx
 			// should not be created.
 			BX_TRACE("Application called bgfx::renderFrame directly, not creating render thread.");
 			m_singleThreaded = true
-				&& ~BGFX_API_THREAD_MAGIC == s_threadIndex
+				&& ~BGFX_API_THREAD_MAGIC == getThreadIndex()
 				;
 		}
 		else
 		{
 			BX_TRACE("Creating rendering thread.");
 			m_singleThreaded = false;
-			m_thread.init(renderThread, this, 0, "bgfx - renderer backend thread");
+			m_thread.init(renderThread, this, 0, "bgfx - renderer backend thread"
+#if BX_PLATFORM_WIIU
+				, _init.swapChain.nwh && ((Gx2PlatformData*)_init.swapChain.nwh)->renderCore >= 0
+					? 1u << ((Gx2PlatformData*)_init.swapChain.nwh)->renderCore : 1u
+#endif
+				);
 		}
 #else
 		BX_TRACE("Multithreaded renderer is disabled.");
@@ -2630,7 +2666,7 @@ namespace bgfx
 
 		BX_TRACE("Running in %s-threaded mode", m_singleThreaded ? "single" : "multi");
 
-		s_threadIndex = BGFX_API_THREAD_MAGIC;
+		setThreadIndex(BGFX_API_THREAD_MAGIC);
 
 		for (uint32_t ii = 0; ii < BX_COUNTOF(m_viewRemap); ++ii)
 		{
@@ -3042,7 +3078,7 @@ namespace bgfx
 
 #if BGFX_CONFIG_MULTITHREADED
 		if (_forceNewEncoder
-		||  BGFX_API_THREAD_MAGIC != s_threadIndex)
+		||  BGFX_API_THREAD_MAGIC != getThreadIndex())
 		{
 			bx::MutexScope beginLockScope(m_encoderBeginLock);
 			bx::MutexScope encoderApiScope(m_encoderApiLock);
@@ -3515,6 +3551,21 @@ namespace bgfx
 		id pool;
 	};
 #endif // BX_PLATFORM_OSX || BX_PLATFORM_IOS || BX_PLATFORM_VISIONOS
+
+#if BX_PLATFORM_WIIU
+	void gx2Suspend(bool _suspend)
+	{
+		if (NULL == s_ctx || !!(s_ctx->m_init.reset & BGFX_RESET_SUSPEND) == _suspend) return;
+		BGFX_CHECK_API_THREAD();
+		if (_suspend) s_ctx->m_init.reset |= BGFX_RESET_SUSPEND;
+		else s_ctx->m_init.reset &= ~BGFX_RESET_SUSPEND;
+		if (_suspend)
+		{
+			frame(BGFX_FRAME_FLUSH);
+			s_ctx->renderSemWait(); s_ctx->renderSemPost();
+		}
+	}
+#endif
 
 	RenderFrame::Enum Context::renderFrame(int32_t _msecs)
 	{
@@ -4866,7 +4917,7 @@ namespace bgfx
 				s_allocatorStub = NULL;
 			}
 
-			s_threadIndex = 0;
+			setThreadIndex(0);
 			g_callback    = NULL;
 			g_allocator   = NULL;
 			break;
@@ -4906,7 +4957,7 @@ namespace bgfx
 			s_allocatorStub = NULL;
 		}
 
-		s_threadIndex = 0;
+		setThreadIndex(0);
 		g_callback    = NULL;
 		g_allocator   = NULL;
 	}

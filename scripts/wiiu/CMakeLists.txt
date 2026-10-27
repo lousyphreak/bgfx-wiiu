@@ -6,6 +6,7 @@ set(BX_DIR "${BGFX_DIR}/../bx-wiiu" CACHE PATH "bx source directory")
 set(BIMG_DIR "${BGFX_DIR}/../bimg-wiiu" CACHE PATH "bimg source directory")
 set(BGFX_SHADERC "${BGFX_DIR}/../../bin/shaderc" CACHE FILEPATH "Host shaderc with CafeGLSL/GX2 support")
 option(BGFX_GX2_UNIFORM_REGISTERS "Use direct GX2 graphics uniforms instead of uniform buffers" ON)
+option(BGFX_CONFIG_MULTITHREADED "Enable bgfx API/render threading" ON)
 add_subdirectory(${BIMG_DIR}/scripts/wiiu ${CMAKE_CURRENT_BINARY_DIR}/bimg)
 
 add_library(bgfx STATIC
@@ -78,7 +79,7 @@ endforeach()
 file(GENERATE OUTPUT ${generated_dir}/gx2_embedded.bin.h CONTENT "${embedded_includes}")
 target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include PRIVATE ${BGFX_DIR}/3rdparty ${generated_dir})
 target_compile_options(bgfx PRIVATE -fno-exceptions -fno-rtti)
-target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_MULTITHREADED=0
+target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_MULTITHREADED=$<BOOL:${BGFX_CONFIG_MULTITHREADED}>
     PRIVATE BGFX_CONFIG_VIDEO=0 BGFX_CONFIG_MIP_GEN_FALLBACK=0 BGFX_CONFIG_BLIT_FALLBACK=0)
 set(BGFX_GX2_PROFILER 0 CACHE STRING "GX2 profiling: 0 off, 1 cycles/cache, 2 stalls, 3 low-overhead timing")
 target_compile_definitions(bgfx PRIVATE BGFX_CONFIG_GX2_PROFILER=${BGFX_GX2_PROFILER})

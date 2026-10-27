@@ -17,6 +17,11 @@
 #endif // BX_PLATFORM_EMSCRIPTEN
 
 #include "entry_p.h"
+#if BX_PLATFORM_WIIU
+#if ENTRY_CONFIG_USE_SDL3
+#include "entry_sdl3.h"
+#endif
+#endif // BX_PLATFORM_WIIU
 #include "cmd.h"
 #include "input.h"
 
@@ -635,6 +640,11 @@ BX_PRAGMA_DIAGNOSTIC_POP();
 
 		TestRun test(_argc, _argv);
 
+#if BX_PLATFORM_WIIU
+#if ENTRY_CONFIG_USE_SDL3
+		sdl3::prepareBgfx();
+#endif
+#endif // BX_PLATFORM_WIIU
 		_app->init(_argc, _argv, s_width, s_height);
 		bgfx::frame();
 

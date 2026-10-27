@@ -7,6 +7,7 @@
 #if BGFX_CONFIG_RENDERER_GX2
 #include "renderer.h"
 #include "renderer_gx2.h"
+#include "renderer_gx2_native.h"
 #include "renderer_gx2_profiler.h"
 #include "cs_gx2_indirect.gx2.bin.h"
 #include "cs_gx2_indirect_indexed.gx2.bin.h"
@@ -316,20 +317,14 @@ namespace bgfx { namespace gx2
 	{
 		RendererContextGX2(const Init& _init)
 		{
+			m_native.start();
+			m_native.acquire(_init.swapChain.height);
+			m_context = m_native.context;
 			GX2_PROFILE(init());
-			m_gpuTimeout = GX2GetGPUTimeout();
-			// Short host timeouts can reset legitimate full-resolution fragment loops.
-			GX2SetGPUTimeout(bx::max(m_gpuTimeout, 10000u));
 			m_defaultVertex = allocate(16);
 			bx::memSet(m_defaultVertex->data, 0, 16);
 			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, m_defaultVertex->data, 16);
 			m_mainWindow.swapChain = _init.swapChain;
-			if (NULL == _init.swapChain.nwh)
-			{
-				m_headlessContext = (GX2ContextState*)allocate(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT)->data;
-				GX2SetupContextStateEx(m_headlessContext, TRUE);
-				m_context = m_headlessContext;
-			}
 			g_caps.supported = BGFX_CAPS_IMAGE_RW | BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY | BGFX_CAPS_PRIMITIVE_ID;
 #if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 			g_caps.supported &= ~BGFX_CAPS_IMAGE_RW; // Graphics images require uniform block 15.
@@ -377,26 +372,15 @@ namespace bgfx { namespace gx2
 
 		~RendererContextGX2()
 		{
-			queryWindows(m_mainWindow.swapChain);
-			detachWindow(m_mainWindow);
-			for (FrameBuffer& fb : m_frameBuffers) detachWindow(fb.window);
-			if (m_context)
-			{
-				// One foreground shutdown drain covers live and retired storage.
-				destroyWindow(m_mainWindow);
-				for (FrameBuffer& fb : m_frameBuffers) destroyWindow(fb.window);
-				if (m_headlessContext) GX2SetContextState(NULL);
-				GX2DrawDone(); seal();
-				GX2SetGPUTimeout(m_gpuTimeout);
-			}
+			if (!m_suspended) suspend();
 			GX2_PROFILE(finish());
-			// An unavailable adapter has already drained GX2 before releasing foreground.
 			transferPublish(true);
 			for (Block* block : m_allocations)
 			{
 				freeBlock(block);
 				bx::deleteObject(g_allocator, block);
 			}
+			m_native.shutdown();
 		}
 
 		RendererType::Enum getRendererType() const override { return RendererType::Gx2; }
@@ -418,9 +402,9 @@ namespace bgfx { namespace gx2
 			else MEMFreeToDefaultHeap(_block->data);
 		}
 
-		Block* allocateFrameBuffer(Window& _window, uint32_t _size, uint32_t _alignment)
+		Block* allocateFrameBuffer(uint32_t _size, uint32_t _alignment)
 		{
-			MEMHeapHandle heap = (MEMHeapHandle)_window.target.frameBufferHeap;
+			MEMHeapHandle heap = m_native.mem1;
 			if (heap)
 			{
 				void* data = MEMAllocFromExpHeapEx(heap, bx::alignUp(_size, 64), bx::max(64u, _alignment));
@@ -486,6 +470,7 @@ namespace bgfx { namespace gx2
 		void endFrame(bool _willPresent) override
 		{
 			GX2_PROFILE_COARSE(EndFrame);
+			if (m_suspended) { GX2_PROFILE(end()); return; }
 			transferPublish();
 			const bool present = _willPresent && preparePresent();
 			if (m_frameGpuTimer != UINT32_MAX)
@@ -497,8 +482,6 @@ namespace bgfx { namespace gx2
 			{
 				GX2Flush(); seal();
 			}
-			// Resource precommands of the next frame must not restore a stale borrow.
-			m_context = m_headlessContext;
 		}
 
 		void flip() override
@@ -522,10 +505,14 @@ namespace bgfx { namespace gx2
 				if (stamp > GX2GetRetiredTimeStamp())
 					{ GX2_PROFILE_SCOPE(PresentGpuWait); while (!GX2WaitTimeStamp(stamp)) {} }
 			}
-			presentWindow(m_mainWindow);
-			for (FrameBuffer& fb : m_frameBuffers) presentWindow(fb.window);
-			// The adapter submits its scan copy too: an external color source is a
-			// bgfx Block, so retirement must include the presentation consumer.
+			bool independentDrc = false;
+			for (FrameBuffer& fb : m_frameBuffers)
+				independentDrc |= fb.window.swapChain.nwh && ((const Gx2PlatformData*)fb.window.swapChain.nwh)->display == 1;
+			presentWindow(m_mainWindow, independentDrc);
+			for (FrameBuffer& fb : m_frameBuffers) presentWindow(fb.window, independentDrc);
+			GX2SwapScanBuffers(); GX2Flush();
+			GX2SetTVEnable(TRUE); GX2SetDRCEnable(TRUE);
+			// Retirement includes all scan copies submitted by this frame.
 			m_presentStamps[m_presentCursor] = seal();
 			m_presentCursor = (m_presentCursor+1)%kQueuedFrames;
 		}
@@ -1967,7 +1954,6 @@ namespace bgfx { namespace gx2
 			Window* window = windowFor(_handle);
 			if (window)
 			{
-				if (m_context != window->target.context) { m_context = window->target.context; restore(); }
 				prepareWindow(*window);
 			}
 			bool restored = false;
@@ -2369,12 +2355,12 @@ namespace bgfx { namespace gx2
 		bool transferScreen(FrameBufferHandle _handle, GX2Surface& _surface, uint32_t& _mip, uint32_t& _slice, TextureFormat::Enum& _format)
 		{
 			Window* window = windowFor(_handle);
-			if (!window || !window->target.color) return false;
+			if (!window || m_suspended || !window->swapChain.nwh) return false;
 			prepareWindow(*window); resolveWindow(*window);
 			// Screenshot-only windows still consume their owned color/AA storage.
 			if (window->colorImage) touch(window->colorImage);
 			if (window->auxiliary) touch(window->auxiliary);
-			const GX2ColorBuffer& color = ownsWindowColor(*window) ? windowColor(*window) : *window->target.color;
+			const GX2ColorBuffer& color = presentColor(*window);
 			_surface = color.surface; _mip = color.viewMip; _slice = color.viewFirstSlice;
 			if (window->swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER) _surface.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
 			_format = TextureFormat::RGBA8;
@@ -3587,7 +3573,7 @@ namespace bgfx { namespace gx2
 		bool frameBufferAvailable(FrameBufferHandle _handle)
 		{
 			Window* window = windowFor(_handle);
-			return !window || window->target.color;
+			return !window || (!m_suspended && window->swapChain.nwh);
 		}
 
 		void releaseWindowColor(Window& _window)
@@ -3598,6 +3584,7 @@ namespace bgfx { namespace gx2
 				if (_window.auxiliary) GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _window.auxiliary->data, _window.auxiliary->size);
 				retire(_window.colorImage); retire(_window.auxiliary);
 			}
+			retire(_window.resolveImage); _window.resolved = {};
 			_window.color = {}; _window.colorDirty = false;
 		}
 
@@ -3611,20 +3598,20 @@ namespace bgfx { namespace gx2
 			_window.depth = {};
 		}
 
-		// SDL has drained GX2. Drop its foreground allocations before heap teardown;
-		// retaining them until a later generation poll would leave dangling owners.
-		static void releaseForeground(void* _renderer)
+		void suspend()
 		{
-			RendererContextGX2& renderer = *(RendererContextGX2*)_renderer;
-			renderer.discardWindow(renderer.m_mainWindow);
-			for (FrameBuffer& fb : renderer.m_frameBuffers) renderer.discardWindow(fb.window);
-			for (size_t ii = 0; ii < renderer.m_allocations.size();)
+			m_native.drain(); seal();
+			discardWindow(m_mainWindow);
+			for (FrameBuffer& fb : m_frameBuffers) discardWindow(fb.window);
+			// Retired MEM1 images also belong to the foreground heap being returned.
+			for (size_t ii = 0; ii < m_allocations.size();)
 			{
-				Block* block = renderer.m_allocations[ii];
-				if (block->heap) renderer.discardBlock(block);
+				Block* block = m_allocations[ii];
+				if (block->heap) discardBlock(block);
 				else ++ii;
 			}
-			renderer.m_context = NULL;
+			m_native.release();
+			m_context = NULL; m_suspended = true;
 		}
 
 		void discardBlock(Block*& _block)
@@ -3638,116 +3625,59 @@ namespace bgfx { namespace gx2
 
 		void discardWindow(Window& _window)
 		{
-			discardBlock(_window.colorImage); discardBlock(_window.auxiliary);
+			discardBlock(_window.colorImage); discardBlock(_window.auxiliary); discardBlock(_window.resolveImage);
 			discardBlock(_window.depthImage); discardBlock(_window.hiZ);
-			_window.color = {}; _window.depth = {}; _window.target = {};
+			_window.color = {}; _window.depth = {}; _window.resolved = {};
 			_window.colorDirty = false; _window.used = false;
-		}
-
-		void detachWindow(Window& _window)
-		{
-			if (_window.swapChain.nwh)
-			{
-				const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
-				if (platform.setReleaseCallback) platform.setReleaseCallback(platform.userData, NULL, NULL);
-			}
 		}
 
 		void destroyWindow(Window& _window)
 		{
-			// A window can be destroyed by shutdown precommands after foreground
-			// release, before submit/queryWindows has refreshed its old borrow.
-			const bool available = _window.swapChain.nwh && queryWindow(_window);
-			detachWindow(_window);
-			if (available) { releaseWindowColor(_window); releaseWindowDepth(_window); }
+			if (!m_suspended) { releaseWindowColor(_window); releaseWindowDepth(_window); }
 			else discardWindow(_window);
-			_window.target = {}; _window.used = false; _window.swapChain.nwh = NULL;
+			_window.used = false; _window.swapChain.nwh = NULL;
 		}
 
-		bool ownsWindowColor(const Window& _window)
-		{
-			return ((const Gx2PlatformData*)_window.swapChain.nwh)->presentColor != NULL;
-		}
+		GX2ColorBuffer& windowColor(Window& _window) { return _window.color; }
 
-		GX2ColorBuffer& windowColor(Window& _window)
+		void updateWindows(const SwapChain& _main)
 		{
-			return _window.colorImage ? _window.color : *_window.target.color;
-		}
-
-		// Query every adapter once after lifecycle events, including the replacement
-		// main nwh from Frame::m_mainSwapChain. Do not retain copied callback tables.
-		bool queryWindow(Window& _window)
-		{
-			_window.target = {}; _window.used = false;
-			if (!_window.swapChain.nwh) return false;
-			const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
-			if (platform.setReleaseCallback) platform.setReleaseCallback(platform.userData, releaseForeground, this);
-			if (!platform.query(platform.userData, &_window.target) || !_window.target.color || !_window.target.context)
-			{
-				_window.target = {};
-				return false;
-			}
-			if (!platform.setReleaseCallback) _window.target.frameBufferHeap = NULL;
-			return true;
-		}
-
-		FrameBufferHandle queryWindows(const SwapChain& _main)
-		{
-			if (m_mainWindow.swapChain.nwh != _main.nwh) detachWindow(m_mainWindow);
+			if (m_mainWindow.swapChain.height != _main.height) m_native.configureTV(_main.height);
 			m_mainWindow.swapChain = _main;
-			m_context = m_headlessContext;
-			FrameBufferHandle initial = BGFX_INVALID_HANDLE;
-			if (queryWindow(m_mainWindow)) m_context = m_mainWindow.target.context;
-			for (uint16_t ii = 0; ii < BGFX_CONFIG_MAX_FRAME_BUFFERS; ++ii)
-			{
-				Window& window = m_frameBuffers[ii].window;
-				if (window.swapChain.nwh && queryWindow(window) && !m_context)
-				{
-					m_context = window.target.context; initial.idx = ii;
-				}
-			}
-			return initial;
+			m_mainWindow.used = false;
+			for (FrameBuffer& fb : m_frameBuffers) fb.window.used = false;
 		}
 
 		void prepareWindow(Window& _window)
 		{
-			const GX2ColorBuffer& borrowed = *_window.target.color;
-			const uint32_t requested = bx::min<uint32_t>((_window.swapChain.flags & BGFX_SWAP_CHAIN_MSAA_MASK) >> BGFX_SWAP_CHAIN_MSAA_SHIFT, GX2_AA_MODE8X);
-			const GX2AAMode aa = requested ? GX2AAMode(requested) : borrowed.surface.aa;
-			if (borrowed.surface.aa != GX2_AA_MODE1X && borrowed.surface.aa != aa)
-			{ unsupported("changing an adapter's multisample presentation target sample count"); return; }
-			const uint32_t width = bx::max(1u, borrowed.surface.width >> borrowed.viewMip);
-			const uint32_t height = bx::max(1u, borrowed.surface.height >> borrowed.viewMip);
+			const GX2AAMode aa = GX2AAMode(bx::min<uint32_t>((_window.swapChain.flags & BGFX_SWAP_CHAIN_MSAA_MASK) >> BGFX_SWAP_CHAIN_MSAA_SHIFT, GX2_AA_MODE8X));
+			const uint32_t width = bx::max(1u, _window.swapChain.width);
+			const uint32_t height = bx::max(1u, _window.swapChain.height);
 			prepareWindowDepth(_window, width, height, aa);
-			if (ownsWindowColor(_window) || aa != borrowed.surface.aa)
+			GX2ColorBuffer& color = _window.color;
+			if (!_window.colorImage || color.surface.width != width || color.surface.height != height || color.surface.aa != aa)
 			{
-				GX2ColorBuffer& color = _window.color;
-				if (!_window.colorImage || color.surface.width != width || color.surface.height != height
-				|| color.surface.format != borrowed.surface.format || color.surface.aa != aa)
+				releaseWindowColor(_window);
+				color.surface.dim = aa == GX2_AA_MODE1X ? GX2_SURFACE_DIM_TEXTURE_2D : GX2_SURFACE_DIM_TEXTURE_2D_MSAA;
+				color.surface.width = width; color.surface.height = height;
+				color.surface.depth = 1; color.surface.mipLevels = 1;
+				color.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8; color.surface.aa = aa;
+				color.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
+				color.surface.tileMode = GX2_TILE_MODE_DEFAULT;
+				GX2CalcSurfaceSizeAndAlignment(&color.surface);
+				_window.colorImage = allocateFrameBuffer(color.surface.imageSize, color.surface.alignment);
+				DCInvalidateRange(_window.colorImage->data, _window.colorImage->size);
+				color.surface.image = _window.colorImage->data; color.viewNumSlices = 1;
+				if (aa != GX2_AA_MODE1X)
 				{
-					releaseWindowColor(_window);
-					color.surface.dim = aa == GX2_AA_MODE1X ? GX2_SURFACE_DIM_TEXTURE_2D : GX2_SURFACE_DIM_TEXTURE_2D_MSAA;
-					color.surface.width = width; color.surface.height = height;
-					color.surface.depth = 1; color.surface.mipLevels = 1;
-					color.surface.format = borrowed.surface.format; color.surface.aa = aa;
-					color.surface.use = GX2_SURFACE_USE_COLOR_BUFFER;
-					color.surface.tileMode = GX2_TILE_MODE_DEFAULT;
-					GX2CalcSurfaceSizeAndAlignment(&color.surface);
-					_window.colorImage = allocateFrameBuffer(_window, color.surface.imageSize, color.surface.alignment);
-					DCInvalidateRange(_window.colorImage->data, _window.colorImage->size);
-					color.surface.image = _window.colorImage->data; color.viewNumSlices = 1;
-					if (aa != GX2_AA_MODE1X)
-					{
-						uint32_t bytes, alignment; GX2CalcColorBufferAuxInfo(&color, &bytes, &alignment);
-						_window.auxiliary = allocateFrameBuffer(_window, bytes, alignment);
-						bx::memSet(_window.auxiliary->data, GX2_AUX_BUFFER_CLEAR_VALUE, bytes);
-						DCFlushRange(_window.auxiliary->data, bytes);
-						color.aaBuffer = _window.auxiliary->data; color.aaSize = bytes;
-					}
-					GX2InitColorBufferRegs(&color);
+					uint32_t bytes, alignment; GX2CalcColorBufferAuxInfo(&color, &bytes, &alignment);
+					_window.auxiliary = allocateFrameBuffer(bytes, alignment);
+					bx::memSet(_window.auxiliary->data, GX2_AUX_BUFFER_CLEAR_VALUE, bytes);
+					DCFlushRange(_window.auxiliary->data, bytes);
+					color.aaBuffer = _window.auxiliary->data; color.aaSize = bytes;
 				}
+				GX2InitColorBufferRegs(&color);
 			}
-			else if (_window.colorImage) releaseWindowColor(_window);
 		}
 
 		void prepareWindowDepth(Window& _window, uint32_t width, uint32_t height, GX2AAMode aa)
@@ -3771,14 +3701,14 @@ namespace bgfx { namespace gx2
 				depth.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
 				depth.surface.tileMode = GX2_TILE_MODE_DEFAULT;
 				GX2CalcSurfaceSizeAndAlignment(&depth.surface);
-				_window.depthImage = allocateFrameBuffer(_window, depth.surface.imageSize, depth.surface.alignment);
+				_window.depthImage = allocateFrameBuffer(depth.surface.imageSize, depth.surface.alignment);
 				DCInvalidateRange(_window.depthImage->data, _window.depthImage->size);
 				depth.surface.image = _window.depthImage->data;
 				depth.viewNumSlices = 1; depth.depthClear = 1.0f;
 				uint32_t bytes, alignment; GX2CalcDepthBufferHiZInfo(&depth, &bytes, &alignment);
 				if (bytes)
 				{
-					_window.hiZ = allocateFrameBuffer(_window, bytes, alignment); DCInvalidateRange(_window.hiZ->data, bytes);
+					_window.hiZ = allocateFrameBuffer(bytes, alignment); DCInvalidateRange(_window.hiZ->data, bytes);
 					depth.hiZPtr = _window.hiZ->data; depth.hiZSize = bytes;
 				}
 				GX2InitDepthBufferRegs(&depth); GX2InitDepthBufferHiZEnable(&depth, depth.hiZPtr != NULL);
@@ -3787,23 +3717,36 @@ namespace bgfx { namespace gx2
 
 		// Outside display lists, after debug draws, at presentation or first reader.
 		// Keep the multisample source intact: later partial draws retain all samples.
+		GX2ColorBuffer& presentColor(Window& _window)
+		{ return _window.resolveImage ? _window.resolved : _window.color; }
+
 		void resolveWindow(Window& _window)
 		{
 			if (!_window.colorDirty) return;
-			GX2ColorBuffer& source = windowColor(_window);
+			GX2ColorBuffer source = _window.color;
 			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, source.surface.image, source.surface.imageSize);
-			if (_window.colorImage && !ownsWindowColor(_window))
+			if (source.surface.aa != GX2_AA_MODE1X)
 			{
-				GX2ColorBuffer& target = *_window.target.color;
-				GX2ColorBuffer color = source; GX2Surface destination = target.surface;
+				GX2ColorBuffer& target = _window.resolved;
+				if (!_window.resolveImage)
+				{
+					target.surface = source.surface; target.surface.aa = GX2_AA_MODE1X;
+					target.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+					GX2CalcSurfaceSizeAndAlignment(&target.surface);
+					_window.resolveImage = allocateFrameBuffer(target.surface.imageSize, target.surface.alignment);
+					DCInvalidateRange(_window.resolveImage->data, _window.resolveImage->size);
+					target.surface.image = _window.resolveImage->data; target.viewNumSlices = 1;
+					GX2InitColorBufferRegs(&target);
+				}
+				GX2Surface destination = target.surface;
 				if (_window.swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER)
 				{
-					color.surface.format = destination.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
-					GX2InitColorBufferRegs(&color);
+					source.surface.format = destination.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
+					GX2InitColorBufferRegs(&source);
 				}
-				GX2ResolveAAColorBuffer(&color, &destination, target.viewMip, target.viewFirstSlice);
-				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, target.surface.image, target.surface.imageSize);
-				touch(_window.colorImage); touch(_window.auxiliary);
+				GX2ResolveAAColorBuffer(&source, &destination, 0, 0);
+				GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, destination.image, destination.imageSize);
+				touch(_window.colorImage); touch(_window.auxiliary); touch(_window.resolveImage);
 				restore();
 			}
 			_window.colorDirty = false;
@@ -3818,22 +3761,20 @@ namespace bgfx { namespace gx2
 			return present;
 		}
 
-		void presentWindow(Window& _window)
+		void presentWindow(Window& _window, bool _independentDrc)
 		{
 			GX2_PROFILE_SCOPE(Present);
 			if (!_window.used) return;
 			const Gx2PlatformData& platform = *(const Gx2PlatformData*)_window.swapChain.nwh;
-			if (platform.presentColor)
+			GX2ColorBuffer color = presentColor(_window);
+			if (_window.swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER)
 			{
-				GX2ColorBuffer color = windowColor(_window);
-				if (_window.swapChain.flags & BGFX_SWAP_CHAIN_SRGB_BACKBUFFER)
-				{
-					color.surface.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8;
-					GX2InitColorBufferRegs(&color);
-				}
-				platform.presentColor(platform.userData, &color);
+				color.surface.format = GX2_SURFACE_FORMAT_SRGB_R8_G8_B8_A8; GX2InitColorBufferRegs(&color);
 			}
-			else platform.present(platform.userData);
+			GX2CopyColorBufferToScanBuffer(&color, platform.display ? GX2_SCAN_TARGET_DRC : GX2_SCAN_TARGET_TV);
+			if (!platform.display && !_independentDrc) GX2CopyColorBufferToScanBuffer(&color, GX2_SCAN_TARGET_DRC);
+			if (_window.colorImage) touch(_window.colorImage);
+			if (_window.resolveImage) touch(_window.resolveImage);
 			_window.used = false;
 		}
 
@@ -4583,6 +4524,17 @@ namespace bgfx { namespace gx2
 		{
 			GX2_PROFILE(begin(_render->m_frameNum, _render->m_numRenderItems != 0, 0 != (_render->m_reset & BGFX_RESET_VSYNC)));
 			GX2_PROFILE_COARSE(Submit);
+			if (_render->m_reset & BGFX_RESET_SUSPEND)
+			{
+				if (!m_suspended) suspend();
+				_render->m_perfStats.cpuTimeBegin = _render->m_perfStats.cpuTimeEnd = bx::getHPCounter();
+				return;
+			}
+			if (m_suspended)
+			{
+				m_native.acquire(_render->m_mainSwapChain.height);
+				m_context = m_native.context; m_suspended = false;
+			}
 			m_mipGen = &_mipGen; m_transferFrame = _render->m_frameNum; transferPublish();
 			Stats& stats = _render->m_perfStats;
 			stats.cpuTimeBegin = bx::getHPCounter(); stats.cpuTimerFreq = bx::getHPFrequency();
@@ -4592,9 +4544,8 @@ namespace bgfx { namespace gx2
 			bx::memSet(stats.numPrims, 0, sizeof(stats.numPrims));
 			collect();
 			resolveOcclusion(_render); resolveGpuTimers(_render);
-			const FrameBufferHandle initial = queryWindows(_render->m_mainSwapChain);
-			if (!m_context)
-			{ transferCapture(0 != (_render->m_reset & BGFX_RESET_CAPTURE)); stats.cpuTimeEnd = bx::getHPCounter(); return; }
+			updateWindows(_render->m_mainSwapChain);
+			const FrameBufferHandle initial = BGFX_INVALID_HANDLE;
 #if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
 			s_gx2Profiler.startGpu(_render->m_numRenderItems != 0);
 #endif
@@ -4955,8 +4906,8 @@ namespace bgfx { namespace gx2
 		Window m_mainWindow;
 		OSTime m_presentStamps[kQueuedFrames] = {};
 		uint32_t m_presentCursor = 0;
-		uint32_t m_gpuTimeout;
-		GX2ContextState* m_headlessContext = NULL;
+		NativeGraphics m_native;
+		bool m_suspended = false;
 		GX2ContextState* m_context = NULL;
 		Buffer m_indexBuffers[BGFX_CONFIG_MAX_INDEX_BUFFERS];
 		Buffer m_vertexBuffers[BGFX_CONFIG_MAX_VERTEX_BUFFERS];

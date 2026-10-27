@@ -203,12 +203,13 @@ namespace bgfx { namespace gx2
 		float depthClear = 1.0f;
 		uint32_t stencilClear = 0;
 	};
-	// Adapter targets are borrowed for this inline frame. Only Blocks are owned.
+	// Native swapchain storage. All allocations belong to bgfx.
 	struct Window
 	{
 		SwapChain swapChain;
-		Gx2Target target = {};
 		GX2ColorBuffer color = {};
+		GX2ColorBuffer resolved = {};
+		Block* resolveImage = NULL;
 		GX2DepthBuffer depth = {};
 		Block* colorImage = NULL;
 		Block* auxiliary = NULL;

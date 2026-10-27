@@ -5,36 +5,34 @@
 
 #include "entry_p.h"
 
-#if BX_PLATFORM_WIIU
+#if ENTRY_CONFIG_USE_SDL3
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #undef main
+#if BX_PLATFORM_WIIU
 #include <SDL3/SDL_wiiu.h>
 #include <bgfx/platform_gx2.h>
-#include <gx2/surface.h>
+#endif
+#include "entry_sdl3.h"
 #include <unistd.h>
 
 namespace entry
 {
-	static bool queryTarget(void* _userData, bgfx::Gx2Target* _target);
-	static void present(void* _userData);
-	static void presentColor(void* _userData, const GX2ColorBuffer* _color);
-	static void setReleaseCallback(void* _userData, void (*_release)(void*), void* _renderer);
-
 	struct Window
 	{
 		SDL_Window* window = NULL;
-		bgfx::Gx2PlatformData platform = { this, queryTarget, present, presentColor, setReleaseCallback };
-		SDL_WiiUExternalGraphics graphics = {};
+#if BX_PLATFORM_WIIU
+		bgfx::Gx2PlatformData platform;
 		Sint64 generation = -1;
+#endif
 		int32_t mouseX = 0;
 		int32_t mouseY = 0;
 		int32_t mouseZ = 0;
 	};
 
 	// SDL's single window mirrors both outputs. A second window owns the DRC.
-	static Window s_windows[2];
+	static Window s_windows[ENTRY_CONFIG_MAX_WINDOWS];
 	static EventQueue s_events;
 	static SDL_Gamepad* s_gamepads[ENTRY_CONFIG_MAX_GAMEPADS];
 	// Remember the key chosen on press, so releasing ZL before X/Y still releases
@@ -42,67 +40,21 @@ namespace entry
 	static Key::Enum s_faceKeys[ENTRY_CONFIG_MAX_GAMEPADS][2];
 	static bool s_quit;
 
-	static bool queryTarget(void* _userData, bgfx::Gx2Target* _target)
-	{
-		Window& win = *static_cast<Window*>(_userData);
-		*_target = {};
-		if (NULL == win.window) return false;
-		SDL_PropertiesID props = SDL_GetWindowProperties(win.window);
-		_target->frameBufferHeap = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_MEM1_HEAP_POINTER, NULL);
-		Uint32 outputs = Uint32(SDL_GetNumberProperty(props, SDL_PROP_WINDOW_WIIU_PRESENT_OUTPUT_MASK_NUMBER, 0));
-		if (outputs & SDL_WIIU_PRESENT_OUTPUT_TV)
-		{
-			_target->color = static_cast<GX2ColorBuffer*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_TV_COLOR_BUFFER_POINTER, NULL));
-			_target->context = static_cast<GX2ContextState*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_TV_CONTEXT_STATE_POINTER, NULL));
-		}
-		else if (outputs & SDL_WIIU_PRESENT_OUTPUT_DRC)
-		{
-			_target->color = static_cast<GX2ColorBuffer*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_DRC_COLOR_BUFFER_POINTER, NULL));
-			_target->context = static_cast<GX2ContextState*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIIU_DRC_CONTEXT_STATE_POINTER, NULL));
-		}
-		return NULL != _target->color && NULL != _target->context;
-	}
-
-	static void present(void* _userData)
-	{
-		SDL_WIIU_SwapWindow(static_cast<Window*>(_userData)->window);
-	}
-
-	static void presentColor(void* _userData, const GX2ColorBuffer* _color)
-	{
-		Window& win = *static_cast<Window*>(_userData);
-		win.graphics.color = _color;
-		SDL_WIIU_SwapWindow(win.window);
-		win.graphics.color = NULL;
-	}
-
-	static void setReleaseCallback(void* _userData, void (*_release)(void*), void* _renderer)
-	{
-		Window& win = *static_cast<Window*>(_userData);
-		win.graphics.release = _release; win.graphics.userdata = _renderer;
-	}
-
 	static WindowHandle findWindow(SDL_WindowID _id)
 	{
 		for (uint16_t ii = 0; ii < BX_COUNTOF(s_windows); ++ii)
-		{
-			if (NULL != s_windows[ii].window && SDL_GetWindowID(s_windows[ii].window) == _id)
-			{
-				return { ii };
-			}
-		}
+			if (s_windows[ii].window && SDL_GetWindowID(s_windows[ii].window) == _id) return { ii };
 		return { UINT16_MAX };
 	}
 
 	static void updateWindowSize(WindowHandle _handle)
 	{
 		Window& win = s_windows[_handle.idx];
-		bgfx::Gx2Target target;
-		if (queryTarget(&win, &target))
-		{
-			win.generation = SDL_GetNumberProperty(SDL_GetWindowProperties(win.window), SDL_PROP_WINDOW_WIIU_FOREGROUND_GENERATION_NUMBER, 0);
-			s_events.postSizeEvent(_handle, target.color->surface.width, target.color->surface.height);
-		}
+		int width, height; SDL_GetWindowSizeInPixels(win.window, &width, &height);
+#if BX_PLATFORM_WIIU
+		win.generation = SDL_GetNumberProperty(SDL_GetWindowProperties(win.window), SDL_PROP_WINDOW_WIIU_FOREGROUND_GENERATION_NUMBER, 0);
+#endif
+		s_events.postSizeEvent(_handle, width, height);
 	}
 
 	static Key::Enum translateKey(SDL_Scancode _key)
@@ -202,7 +154,6 @@ namespace entry
 
 	static void pumpEvents()
 	{
-		bgfx::Gx2Target target;
 		do
 		{
 			SDL_Event event;
@@ -338,12 +289,17 @@ namespace entry
 			}
 
 			if (s_quit) return;
-			if (queryTarget(&s_windows[0], &target)) break;
-			// SDL releases its borrowed GX2 targets while in the background.
+#if BX_PLATFORM_WIIU
+			if (SDL_GetNumberProperty(SDL_GetWindowProperties(s_windows[0].window), SDL_PROP_WINDOW_WIIU_PRESENT_OUTPUT_MASK_NUMBER, 0) != 0) break;
+			// Background entry waits until lifecycle handling permits GPU submission.
 			// Keep pumping ProcUI without returning to an example's rendering loop.
 			SDL_Delay(10);
+#else
+			break;
+#endif
 		} while (true);
 
+#if BX_PLATFORM_WIIU
 		for (uint16_t ii = 0; ii < BX_COUNTOF(s_windows); ++ii)
 		{
 			Window& win = s_windows[ii];
@@ -351,6 +307,7 @@ namespace entry
 			Sint64 generation = SDL_GetNumberProperty(SDL_GetWindowProperties(win.window), SDL_PROP_WINDOW_WIIU_FOREGROUND_GENERATION_NUMBER, 0);
 			if (generation != win.generation) updateWindowSize({ ii });
 		}
+#endif
 	}
 
 	const Event* poll()
@@ -369,14 +326,18 @@ namespace entry
 
 	WindowHandle createWindow(int32_t _x, int32_t _y, uint32_t _width, uint32_t _height, uint32_t _flags, const char* _title)
 	{
-		BX_UNUSED(_x, _y, _flags);
+		BX_UNUSED(_flags);
 		uint16_t idx;
 		for (idx = 0; idx < BX_COUNTOF(s_windows); ++idx)
 		{
 			if (NULL == s_windows[idx].window) break;
 		}
 		if (idx == BX_COUNTOF(s_windows)) return { UINT16_MAX };
+#if BX_PLATFORM_WIIU
+		if (idx > 1) return { UINT16_MAX };
+#endif
 
+#if BX_PLATFORM_WIIU
 		SDL_DisplayID display = SDL_GetPrimaryDisplay();
 		if (idx != 0)
 		{
@@ -393,23 +354,35 @@ namespace entry
 			SDL_free(displays);
 		}
 
+#endif
 		SDL_PropertiesID props = SDL_CreateProperties();
 		SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, _title);
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, _width);
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, _height);
+#if BX_PLATFORM_WIIU
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
 		Window& win = s_windows[idx];
-		SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIIU_EXTERNAL_GRAPHICS_POINTER, &win.graphics);
+#else
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, _x);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, _y);
+		SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+		Window& win = s_windows[idx];
+#endif
+#if BX_PLATFORM_WIIU
+		win.platform.display = idx;
+#endif
 		win.window = SDL_CreateWindowWithProperties(props);
 		SDL_DestroyProperties(props);
 		if (NULL == win.window) return { UINT16_MAX };
 
+#if BX_PLATFORM_WIIU
 		win.generation = -1;
+#endif
 		win.mouseX = win.mouseY = win.mouseZ = 0;
 		WindowHandle handle = { idx };
 		updateWindowSize(handle);
-		s_events.postWindowEvent(handle, &win.platform);
+		s_events.postWindowEvent(handle, getNativeWindowHandle(handle));
 		return handle;
 	}
 
@@ -420,7 +393,7 @@ namespace entry
 		SDL_DestroyWindow(win.window);
 		win.window = NULL;
 	}
-	void setWindowPos(WindowHandle _handle, int32_t _x, int32_t _y) { BX_UNUSED(_handle, _x, _y); }
+	void setWindowPos(WindowHandle _handle, int32_t _x, int32_t _y) { SDL_SetWindowPosition(s_windows[_handle.idx].window, _x, _y); }
 	void setWindowSize(WindowHandle _handle, uint32_t _width, uint32_t _height)
 	{
 		SDL_SetWindowSize(s_windows[_handle.idx].window, int(_width), int(_height));
@@ -430,27 +403,58 @@ namespace entry
 		SDL_SetWindowTitle(s_windows[_handle.idx].window, _title);
 	}
 	void setWindowFlags(WindowHandle _handle, uint32_t _flags, bool _enabled) { BX_UNUSED(_handle, _flags, _enabled); }
-	void toggleFullscreen(WindowHandle _handle) { BX_UNUSED(_handle); }
+	void toggleFullscreen(WindowHandle _handle)
+	{
+		SDL_Window* window = s_windows[_handle.idx].window;
+		SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+	}
 	void setMouseLock(WindowHandle _handle, bool _lock)
 	{
 		SDL_SetWindowRelativeMouseMode(s_windows[_handle.idx].window, _lock);
 	}
 	void* getNativeWindowHandle(WindowHandle _handle)
 	{
-		return isValid(_handle) && NULL != s_windows[_handle.idx].window ? &s_windows[_handle.idx].platform : NULL;
+		if (!isValid(_handle) || !s_windows[_handle.idx].window) return NULL;
+#if BX_PLATFORM_WIIU
+		return &s_windows[_handle.idx].platform;
+#else
+		SDL_PropertiesID props = SDL_GetWindowProperties(s_windows[_handle.idx].window);
+		if (SDL_strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0)
+			return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+		return (void*)(uintptr_t)SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+#endif
 	}
-	void* getNativeDisplayHandle() { return NULL; }
-	bgfx::NativeWindowHandleType::Enum getNativeWindowHandleType() { return bgfx::NativeWindowHandleType::Default; }
+	void* getNativeDisplayHandle()
+	{
+#if BX_PLATFORM_WIIU
+		return NULL;
+#else
+		SDL_PropertiesID props = SDL_GetWindowProperties(s_windows[0].window);
+		return SDL_GetPointerProperty(props, SDL_strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0
+			? SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER : SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+#endif
+	}
+	bgfx::NativeWindowHandleType::Enum getNativeWindowHandleType()
+	{
+		return SDL_strcmp(SDL_GetCurrentVideoDriver(), "wayland") == 0
+			? bgfx::NativeWindowHandleType::Wayland : bgfx::NativeWindowHandleType::Default;
+	}
 
 } // namespace entry
 
+#if BX_PLATFORM_WIIU
 int SDL_main(int _argc, char** _argv)
+#else
+int main(int _argc, char** _argv)
+#endif
 {
+	SDL_SetHint("SDL_VIDEO_EXTERNAL_GRAPHICS", "1");
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
 	{
 		SDL_Log("SDL_Init failed: %s", SDL_GetError());
 		return 1;
 	}
+	SDL_AddEventWatch(entry::sdl3::lifecycle, NULL);
 	entry::WindowHandle handle = entry::createWindow(0, 0, ENTRY_DEFAULT_WIDTH, ENTRY_DEFAULT_HEIGHT, ENTRY_WINDOW_FLAG_NONE, "bgfx example");
 	if (!entry::isValid(handle))
 	{
@@ -458,12 +462,15 @@ int SDL_main(int _argc, char** _argv)
 		SDL_Quit();
 		return 1;
 	}
+#if BX_PLATFORM_WIIU
 	chdir("fs:/vol/external01/bgfx");
+#endif
 	int result = entry::main(_argc, _argv);
 	for (SDL_Gamepad* gamepad : entry::s_gamepads) SDL_CloseGamepad(gamepad);
 	for (entry::Window& win : entry::s_windows) SDL_DestroyWindow(win.window);
+	SDL_RemoveEventWatch(entry::sdl3::lifecycle, NULL);
 	SDL_Quit();
 	return result;
 }
 
-#endif // BX_PLATFORM_WIIU
+#endif // ENTRY_CONFIG_USE_SDL3
