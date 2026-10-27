@@ -4667,7 +4667,16 @@ namespace bgfx { namespace gx2
 				setScissor(scissor);
 				uniformsBegin(program);
 				viewState.m_alphaRef = float((draw.m_stateFlags & BGFX_STATE_ALPHA_REF_MASK) >> BGFX_STATE_ALPHA_REF_SHIFT)/255;
-				{ GX2_PROFILE_SCOPE(UniformPredefined); viewState.setPredefined<4>(this, view, renderView, program, _render, draw); }
+				{ GX2_PROFILE_SCOPE(UniformPredefined);
+					if (program.m_numPredefined == 1 && (program.m_predefined[0].m_type & ~kUniformFragmentBit) == PredefinedUniform::ModelViewProj)
+					{
+						const PredefinedUniform& uniform = program.m_predefined[0];
+						Matrix4 mvp;
+						bx::float4x4_mul(&mvp.un.f4x4, &_render->m_frameCache.m_matrixCache.at(draw.m_startMatrix).un.f4x4, &viewState.m_viewProj.un.f4x4);
+						setShaderUniform4x4f(uniform.m_type & kUniformFragmentBit, uniform.m_loc, mvp.un.val, bx::min<uint16_t>(4, uniform.m_count));
+					}
+					else viewState.setPredefined<4>(this, view, renderView, program, _render, draw);
+				}
 				uniformsEnd(program);
 				const DepthControl& depth = draw.m_depthBias == UINT16_MAX ? renderView.m_depthBias : _render->m_frameCache.m_depthBiasCache.m_cache[draw.m_depthBias];
 				depthControl(depth);
