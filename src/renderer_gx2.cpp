@@ -4403,6 +4403,8 @@ namespace bgfx { namespace gx2
 			}
 			// All seed copies precede the producer. No CPU writeback of export bytes.
 			if (!outputs.empty()) GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _exports->data, _exports->size);
+			// Native surface copies disable state shadowing and clobber pipeline state.
+			GX2SetContextState(m_context);
 			GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
 			GX2SetComputeShader((const GX2ComputeShader*)shader.header->data);
 			m_boundProgram = &_program;
