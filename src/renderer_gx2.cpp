@@ -3134,6 +3134,14 @@ namespace bgfx { namespace gx2
 			// Only uniformsBegin appends snapshots. With the same program, the preceding
 			// allocation has the same stride; a batch restart has no predecessor.
 			const uint32_t stride = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
+#else
+			if (_program.mvpOnly)
+			{
+				GX2_PROFILE_SCOPE(UniformBind);
+				GX2_PROFILE_ADD(UniformBinds, 1);
+				GX2SetVertexUniformReg(0, 16, m_uniformData[0]);
+			}
+			else
 #endif
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
