@@ -3438,8 +3438,13 @@ namespace bgfx { namespace gx2
 			const uint32_t size = bx::min(_bind.m_size, buffer.size-offset);
 			// update() and gpuBufferWritten() publish once at the producer boundary.
 			const uint32_t endian = buffer.littleEndian ? 0 : index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
-			// Vector fetches select up to four DWORDs; stride and endian stay per buffer.
-			const uint32_t format = (_computeShader || m_boundProgram->compute) ? 34u : 13u;
+			const Shader* vertex = _computeShader ? _computeShader : m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex;
+			// Use the widest native read of this binding, retaining per-buffer endian.
+			uint32_t format = vertex->compute ? 34u : 13u;
+			if (vertex->compute)
+				for (const ComputeResource& resource : vertex->resources)
+					if (resource.kind == 0 && resource.binding == _unit && resource.format)
+						format = resource.format;
 			alignas(64) uint32_t commands[] = {
 				UINT32_C(0xc0076d00), // SET_RESOURCE, register + 7 words
 				0,
@@ -3448,7 +3453,6 @@ namespace bgfx { namespace gx2
 				(4u << 8) | (format << 20) | (1u << 26) | (endian << 30),
 				1u, 0, 0, UINT32_C(0xc0000000),
 			};
-			const Shader* vertex = _computeShader ? _computeShader : m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex;
 			const Shader* fragment = _computeShader ? NULL : m_boundProgram->fragment;
 			if (vertex->rawSrvMask & (1u << _unit))
 			{
