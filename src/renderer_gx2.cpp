@@ -3057,7 +3057,9 @@ namespace bgfx { namespace gx2
 					&& 0 == __builtin_memcmp(__builtin_assume_aligned(m_stageData[stage]+16, 16),
 						__builtin_assume_aligned(m_stageData[stage]-stride+16, 16), 16);
 				{ GX2_PROFILE_SCOPE(UniformPublish);
-					if (cacheable) DCStoreRangeNoSync(m_stageData[stage], size);
+					// Uniform-ring starts are 256-byte aligned; these spans cover one/two CPU lines.
+					if (cacheable) __asm__ volatile ("dcbst 0,%0" : : "r" (m_stageData[stage]) : "memory");
+					else if (size <= 64) __asm__ volatile ("dcbf 0,%0; dcbf 0,%1" : : "r" (m_stageData[stage]), "r" (m_stageData[stage]+32) : "memory");
 					else DCFlushRangeNoSync(m_stageData[stage], size);
 				}
 				if (reuse) { GX2_PROFILE_ADD(UniformReuses, 1); continue; }
