@@ -56,6 +56,30 @@ namespace bgfx { namespace gx2
 		}
 	}
 
+	// Full row-major 4x4 product: two output columns per paired-single operation.
+	// GQR0 is the ABI's unquantized float setting; only volatile FPRs are used.
+	static void multiplyMatrixPaired(float* _dst, const float* _a, const float* _b)
+	{
+		__asm__ volatile (
+			".machine push; .machine gekko;"
+			"psq_l 0, 0(%2), 0, 0; psq_l 1, 8(%2), 0, 0;"
+			"psq_l 2, 16(%2), 0, 0; psq_l 3, 24(%2), 0, 0;"
+			"psq_l 4, 32(%2), 0, 0; psq_l 5, 40(%2), 0, 0;"
+			"psq_l 6, 48(%2), 0, 0; psq_l 7, 56(%2), 0, 0;"
+			".set .LmatrixRow%=, 0; .rept 4;"
+			"psq_l 8, .LmatrixRow%=(%1), 0, 0;"
+			"psq_l 9, .LmatrixRow%=+8(%1), 0, 0;"
+			"ps_muls0 10, 0, 8; ps_muls0 11, 1, 8;"
+			"ps_madds1 10, 2, 8, 10; ps_madds1 11, 3, 8, 11;"
+			"ps_madds0 10, 4, 9, 10; ps_madds0 11, 5, 9, 11;"
+			"ps_madds1 10, 6, 9, 10; ps_madds1 11, 7, 9, 11;"
+			"psq_st 10, .LmatrixRow%=(%0), 0, 0;"
+			"psq_st 11, .LmatrixRow%=+8(%0), 0, 0;"
+			".set .LmatrixRow%=, .LmatrixRow%=+16; .endr; .machine pop;"
+			: : "b" (_dst), "b" (_a), "b" (_b)
+			: "fr0", "fr1", "fr2", "fr3", "fr4", "fr5", "fr6", "fr7", "fr8", "fr9", "fr10", "fr11", "memory");
+	}
+
 	static void prepareCpuOverwrite(void* _data, uint32_t _bytes)
 	{
 		uint8_t* data = (uint8_t*)_data;
@@ -4672,7 +4696,7 @@ namespace bgfx { namespace gx2
 					{
 						const PredefinedUniform& uniform = program.m_predefined[0];
 						Matrix4 mvp;
-						bx::float4x4_mul(&mvp.un.f4x4, &_render->m_frameCache.m_matrixCache.at(draw.m_startMatrix).un.f4x4, &viewState.m_viewProj.un.f4x4);
+						multiplyMatrixPaired(mvp.un.val, _render->m_frameCache.m_matrixCache.at(draw.m_startMatrix).un.val, viewState.m_viewProj.un.val);
 						setShaderUniform4x4f(uniform.m_type & kUniformFragmentBit, uniform.m_loc, mvp.un.val, bx::min<uint16_t>(4, uniform.m_count));
 					}
 					else viewState.setPredefined<4>(this, view, renderView, program, _render, draw);
