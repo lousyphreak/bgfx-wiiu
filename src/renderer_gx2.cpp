@@ -3430,12 +3430,14 @@ namespace bgfx { namespace gx2
 			const uint32_t size = bx::min(_bind.m_size, buffer.size-offset);
 			// update() and gpuBufferWritten() publish once at the producer boundary.
 			const uint32_t endian = buffer.littleEndian ? 0 : index && !(buffer.flags & BGFX_BUFFER_INDEX32) ? 1 : 2;
+			// Vector fetches select up to four DWORDs; stride and endian stay per buffer.
+			const uint32_t format = (_computeShader || m_boundProgram->compute) ? 34u : 13u;
 			alignas(64) uint32_t commands[] = {
 				UINT32_C(0xc0076d00), // SET_RESOURCE, register + 7 words
 				0,
 				OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data))+offset),
 				size-1,
-				(4u << 8) | (13u << 20) | (1u << 26) | (endian << 30),
+				(4u << 8) | (format << 20) | (1u << 26) | (endian << 30),
 				1u, 0, 0, UINT32_C(0xc0000000),
 			};
 			const Shader* vertex = _computeShader ? _computeShader : m_boundProgram->compute ? m_boundProgram->compute : m_boundProgram->vertex;
