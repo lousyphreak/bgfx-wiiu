@@ -73,7 +73,7 @@ foreach(family IN LISTS embedded_families)
         add_custom_command(OUTPUT "${output}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${example_generated_dir}"
             COMMAND "${BGFX_SHADERC}" -f "${source}" -o "${output}"
-                --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
+                --type ${stage} --platform wiiu -p $<TARGET_PROPERTY:bgfx,BGFX_GX2_SHADER_PROFILE> --bin2c ${shader}_gx2
                 --varyingdef "${common_dir}/${family}/varying.def.sc"
                 -i "${BGFX_DIR}/src;${common_dir}" --depends
             DEPENDS "${BGFX_SHADERC}" "${source}"
@@ -116,6 +116,13 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
 
     # Graphics assets are universal; native compute assets are selected explicitly.
     file(GLOB shader_sources CONFIGURE_DEPENDS "${example_dir}/vs_*.sc" "${example_dir}/fs_*.sc")
+    if(BGFX_GX2_UNIFORM_REGISTERS AND example STREQUAL "21-deferred")
+        # Graphics image access requires native uniform-block mode. The original
+        # deferred example loads these variants only when IMAGE_RW is advertised.
+        list(FILTER shader_sources EXCLUDE REGEX "_uav\\.sc$")
+        file(REMOVE "${package_dir}/content/shaders/gx2/fs_deferred_clear_uav.bin"
+            "${package_dir}/content/shaders/gx2/fs_deferred_light_uav.bin")
+    endif()
     if(example MATCHES "^(08-update|39-assao|46-fsr|48-drawindirect|53-sky2|54-s2h)$")
         file(GLOB compute_sources CONFIGURE_DEPENDS "${example_dir}/cs_*.sc")
         list(APPEND shader_sources ${compute_sources})
@@ -147,10 +154,12 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
     foreach(source IN LISTS shader_sources)
         get_filename_component(shader "${source}" NAME_WE)
         get_filename_component(shader_dir "${source}" DIRECTORY)
+        set(shader_profile $<TARGET_PROPERTY:bgfx,BGFX_GX2_SHADER_PROFILE>)
         if(shader MATCHES "^vs_")
             set(stage vertex)
         elseif(shader MATCHES "^cs_")
             set(stage compute)
+            set(shader_profile gx2)
         else()
             set(stage fragment)
         endif()
@@ -173,7 +182,7 @@ foreach(example IN LISTS BGFX_WIIU_EXAMPLES)
         add_custom_command(OUTPUT "${output}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${output_dir}"
             COMMAND "${BGFX_SHADERC}" -f "${source}" -o "${output}"
-                --type ${stage} --platform wiiu -p gx2 ${bin2c_options}
+                --type ${stage} --platform wiiu -p ${shader_profile} ${bin2c_options}
                 ${varying_options}
                 -i "${BGFX_DIR}/src;${common_dir}" --depends
             DEPENDS "${BGFX_SHADERC}" "${source}" ${varying_file}

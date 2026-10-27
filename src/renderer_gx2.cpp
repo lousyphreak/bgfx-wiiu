@@ -27,6 +27,8 @@ namespace bgfx { namespace gx2
 	static constexpr uint32_t kMaxUniformSnapshot = 2*64*1024;
 	static constexpr uint32_t kListRingSize = kListReservation + kBufferedDraws*256*(BGFX_CONFIG_MAX_FRAME_LATENCY+1);
 	static constexpr uint32_t kUniformRingSize = kMaxUniformSnapshot + kBufferedDraws*512*(BGFX_CONFIG_MAX_FRAME_LATENCY+1);
+	static constexpr GX2ShaderMode kGraphicsShaderMode = BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+		? GX2_SHADER_MODE_UNIFORM_REGISTER : GX2_SHADER_MODE_UNIFORM_BLOCK;
 
 	static void unsupported(const char* _operation)
 	{
@@ -40,6 +42,7 @@ namespace bgfx { namespace gx2
 		return value;
 	}
 
+	template<bool _registers = false>
 	static void writeFloats(void* _dst, const void* _src, uint32_t _count)
 	{
 		uint32_t* dst = (uint32_t*)_dst;
@@ -49,10 +52,10 @@ namespace bgfx { namespace gx2
 		for (uint32_t ii = 0; ii < _count; ++ii)
 		{
 			uint32_t bits;
-			// Keep the fixed-size bit copy visible to the compiler: lwbrx/stw,
-			// rather than an out-of-line bx::memCopy call for each float.
+			// Registers consume native words; GPU uniform memory is little endian.
+			// Keep this fixed-size bit copy visible to the compiler.
 			__builtin_memcpy(&bits, src+ii*4, 4);
-			dst[ii] = bx::toLittleEndian(bits);
+			dst[ii] = _registers ? bits : bx::toLittleEndian(bits);
 		}
 	}
 
@@ -328,6 +331,9 @@ namespace bgfx { namespace gx2
 				m_context = m_headlessContext;
 			}
 			g_caps.supported = BGFX_CAPS_IMAGE_RW | BGFX_CAPS_DRAW_INDIRECT | BGFX_CAPS_DRAW_INDIRECT_COUNT | BGFX_CAPS_SWAP_CHAIN | BGFX_CAPS_INDEX32 | BGFX_CAPS_BLEND_INDEPENDENT | BGFX_CAPS_VERTEX_ATTRIB_UINT10 | BGFX_CAPS_TEXTURE_EXTERNAL | BGFX_CAPS_TEXTURE_CUBE_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY | BGFX_CAPS_PRIMITIVE_ID;
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+			g_caps.supported &= ~BGFX_CAPS_IMAGE_RW; // Graphics images require uniform block 15.
+#endif
 			g_caps.homogeneousDepth = false;
 			g_caps.originBottomLeft = false;
 			bx::memSet(g_caps.formats, 0, sizeof(g_caps.formats));
@@ -1068,6 +1074,7 @@ namespace bgfx { namespace gx2
 					for (uint32_t unit = offset; unit < uint32_t(offset)+num; ++unit) shader.samplerDimensions[unit] = dimension;
 					continue;
 				}
+				shader.uniformSize = bx::max(shader.uniformSize, (uint32_t(offset)+uint32_t(rows)*4)*4);
 				const PredefinedUniform::Enum predefined = nameToPredefinedUniformEnum(name);
 				if (predefined != PredefinedUniform::Count)
 				{
@@ -1143,7 +1150,18 @@ namespace bgfx { namespace gx2
 				for (uint32_t input = 0; input < regs.num_spi_ps_input_cntl; ++input)
 					shader.sampleFrequency |= 0 != (regs.spi_ps_input_cntls[input] & 0x00040000);
 			}
-			shader.uniformSize = block ? block->size : 0;
+			if (block) shader.uniformSize = block->size;
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+			if (!shader.compute)
+			{
+				const GX2VertexShader* vertex = (const GX2VertexShader*)shader.header->data;
+				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
+				const uint32_t count = shader.fragment ? fragment->initialValueCount : vertex->initialValueCount;
+				const GX2UniformInitialValue* initial = shader.fragment ? fragment->initialValues : vertex->initialValues;
+				for (uint32_t ii = 0; ii < count; ++ii)
+					shader.uniformSize = bx::max(shader.uniformSize, (initial[ii].offset+4)*4);
+			}
+#endif
 			if (shader.uniformSize > 65536) unsupported("uniform blocks larger than 64 KiB");
 			GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, shader.program->data, programSize);
 			if (!shader.fragment && !shader.compute && GFDGetVertexShaderCount(gfd) > 1)
@@ -2947,7 +2965,7 @@ namespace bgfx { namespace gx2
 		{
 			GX2_PROFILE_ADD(ContextRestores, 1);
 			GX2SetContextState(m_context);
-			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+			GX2SetShaderMode(kGraphicsShaderMode);
 			GX2SetStreamOutEnable(FALSE);
 			GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
 			GX2SetPolygonControl(GX2_FRONT_FACE_CCW, FALSE, FALSE, FALSE, GX2_POLYGON_MODE_TRIANGLE, GX2_POLYGON_MODE_TRIANGLE, FALSE, FALSE, FALSE);
@@ -2974,7 +2992,11 @@ namespace bgfx { namespace gx2
 		void beginBatch(uint32_t _uniformBytes = 0)
 		{
 			m_listOffset = acquire(m_lists, kListReservation);
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 			m_uploadOffset = acquire(m_uploads, _uniformBytes);
+#else
+			BX_UNUSED(_uniformBytes);
+#endif
 			m_uploadUsed = 0;
 			m_batchDraws = 0;
 			GX2BeginDisplayListEx((uint8_t*)m_lists.block->data+m_listOffset, kListReservation, TRUE);
@@ -2986,12 +3008,14 @@ namespace bgfx { namespace gx2
 			uint32_t bytes;
 			{ GX2_PROFILE_SCOPE(ListFinish); bytes = GX2EndDisplayList(listData); }
 			GX2_PROFILE_ADD(ListBytes, bytes);
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 			if (m_uploadUsed)
 			{
 				// Publish populated spans only; other ring ranges can still be in flight.
 				OSMemoryBarrier();
 				{ GX2_PROFILE_SCOPE(UniformInvalidate); GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, (uint8_t*)m_uploads.block->data+m_uploadOffset, m_uploadUsed); }
 			}
+#endif
 			if (bytes) { GX2_PROFILE_SCOPE(ListCall); GX2CallDisplayList(listData, bytes); }
 			m_lists.head += bx::alignUp(bytes, 64);
 			m_uploads.head += m_uploadUsed;
@@ -3001,10 +3025,17 @@ namespace bgfx { namespace gx2
 		// list with an unbounded run of commands that consumes no uniform bytes.
 		void reserveBatch(uint32_t _operations, uint32_t _uniformBytes)
 		{
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 			const uint32_t capacity = m_uploads.block->size;
+#else
+			BX_UNUSED(_uniformBytes);
+#endif
 			if (m_batchDraws+_operations > 32
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 			|| m_uploadOffset+m_uploadUsed+_uniformBytes > capacity
-			|| m_uploads.head+m_uploadUsed+_uniformBytes > m_uploads.tail+capacity)
+			|| m_uploads.head+m_uploadUsed+_uniformBytes > m_uploads.tail+capacity
+#endif
+			)
 			{
 				endBatch(); beginBatch(_uniformBytes);
 			}
@@ -3013,19 +3044,31 @@ namespace bgfx { namespace gx2
 
 		void uniformsBegin(Program& _program)
 		{
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+			// Large inline constants also consume the display list's draw budget.
+			reserveBatch(1+(_program.vertex->uniformSize+_program.fragment->uniformSize)/4096, 0);
+#else
 			const uint32_t bytes = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
 			reserveBatch(1, bytes);
+#endif
 			GX2_PROFILE_SCOPE(UniformFill);
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
 				if (!shader.uniformSize) continue;
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+				// Native setters copy into the display list before this CPU scratch is reused.
+				m_stageData[stage] = m_uniformData[stage];
+#else
 				m_stageData[stage] = (uint8_t*)m_uploads.block->data + m_uploadOffset + m_uploadUsed;
-				// A fresh snapshot has no CPU contents to preserve. dcbz allocates its
-				// cache blocks without fetching the previous GPU-only bytes from MEM2.
+#endif
+				// A fresh snapshot has no contents to preserve. dcbz zeros its cache
+				// blocks without fetching the previous bytes from MEM2.
 				GX2_PROFILE_ADD(UniformBytes, shader.uniformSize);
 				{ GX2_PROFILE_SCOPE(UniformZero); DCZeroRange(m_stageData[stage], shader.uniformSize); }
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 				m_uploadUsed += bx::alignUp(shader.uniformSize, 256);
+#endif
 				const GX2VertexShader* vertex = (const GX2VertexShader*)shader.header->data;
 				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
 				const uint32_t count = stage ? fragment->initialValueCount : vertex->initialValueCount;
@@ -3034,7 +3077,7 @@ namespace bgfx { namespace gx2
 				if (count) { GX2_PROFILE_SCOPE(UniformInitial);
 #endif
 				for (uint32_t ii = 0; ii < count; ++ii)
-					writeFloats(m_stageData[stage]+initial[ii].offset*4, initial[ii].value, 4);
+					writeFloats<BGFX_CONFIG_GX2_UNIFORM_REGISTERS>(m_stageData[stage]+initial[ii].offset*4, initial[ii].value, 4);
 #if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
 				}
 #endif
@@ -3049,9 +3092,9 @@ namespace bgfx { namespace gx2
 					if (uniform.type == UniformType::Mat3)
 					{
 						for (uint32_t ii = 0; ii < uint32_t(uniform.count)*3; ++ii)
-							writeFloats(dst+ii*16, src+ii*3, 3);
+							writeFloats<BGFX_CONFIG_GX2_UNIFORM_REGISTERS>(dst+ii*16, src+ii*3, 3);
 					}
-					else writeFloats(dst, src, uniform.rows*4);
+					else writeFloats<BGFX_CONFIG_GX2_UNIFORM_REGISTERS>(dst, src, uniform.rows*4);
 				}
 #if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
 				}
@@ -3060,20 +3103,34 @@ namespace bgfx { namespace gx2
 		}
 
 		void setShaderUniform4f(uint8_t _flags, uint32_t _loc, const void* _data, uint32_t _num)
-		{ writeFloats(m_stageData[0 != (_flags & kUniformFragmentBit)]+_loc*4, _data, _num*4); }
+		{
+			void* dst = m_stageData[0 != (_flags & kUniformFragmentBit)]+_loc*4;
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+			if (m_boundProgram && m_boundProgram->compute) { writeFloats(dst, _data, _num*4); return; }
+#endif
+			writeFloats<BGFX_CONFIG_GX2_UNIFORM_REGISTERS>(dst, _data, _num*4);
+		}
 		void setShaderUniform4x4f(uint8_t _flags, uint32_t _loc, const void* _data, uint32_t _num)
 		{ setShaderUniform4f(_flags, _loc, _data, _num); }
 
 		void uniformsEnd(Program& _program)
 		{
 			GX2_PROFILE_SCOPE(UniformEnd);
+#if !BGFX_CONFIG_GX2_UNIFORM_REGISTERS
 			// Only uniformsBegin appends snapshots. With the same program, the preceding
 			// allocation has the same stride; a batch restart has no predecessor.
 			const uint32_t stride = bx::alignUp(_program.vertex->uniformSize, 256)+bx::alignUp(_program.fragment->uniformSize, 256);
+#endif
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				const uint32_t size = (stage ? _program.fragment : _program.vertex)->uniformSize;
 				if (!size) continue;
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+				GX2_PROFILE_SCOPE(UniformBind);
+				GX2_PROFILE_ADD(UniformBinds, 1);
+				if (stage) GX2SetPixelUniformReg(0, size/4, m_stageData[stage]);
+				else GX2SetVertexUniformReg(0, size/4, m_stageData[stage]);
+#else
 				// Compare one CPU cache line inline; larger blocks keep their original path.
 				const bool cacheable = size <= 32;
 				const bool reuse = cacheable && m_boundProgram == &_program && m_uploadUsed >= 2*stride
@@ -3093,6 +3150,7 @@ namespace bgfx { namespace gx2
 					if (stage) GX2SetPixelUniformBlock(0, size, m_stageData[stage]);
 					else GX2SetVertexUniformBlock(0, size, m_stageData[stage]);
 				}
+#endif
 			}
 			if (m_boundProgram != &_program) bindProgram(_program);
 		}
@@ -4306,7 +4364,7 @@ namespace bgfx { namespace gx2
 			touch(shader.header); touch(shader.program);
 			GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, _exports->data, _bytes);
 			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, _exports->data, _bytes); // Actual copy source reader.
-			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+			GX2SetShaderMode(kGraphicsShaderMode);
 			gpuCopyBytes(_exports, 0, commands, 0, _bytes);
 			GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, commands->data, commands->size);
 			if (_mode == 2) GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, commands->data, 16); // RID147.
@@ -4471,7 +4529,7 @@ namespace bgfx { namespace gx2
 				GX2Invalidate(GX2_INVALIDATE_MODE_EXPORT_BUFFER, data, output.size);
 				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, data, output.size);
 			}
-			GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+			GX2SetShaderMode(kGraphicsShaderMode);
 			for (const ComputeOutput& output : outputs)
 			{
 				const Binding& bind = _bind.m_bind[output.binding];
@@ -4893,6 +4951,9 @@ namespace bgfx { namespace gx2
 		uint32_t m_uploadUsed = 0;
 		uint32_t m_batchDraws = 0;
 		uint8_t* m_stageData[2];
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+		alignas(32) uint8_t m_uniformData[2][4096];
+#endif
 		TextVideoMem m_statsText;
 		bool m_wireframe = false;
 		// Sticky: ordinary graphics frames need no export-layout traversal.
@@ -4926,12 +4987,12 @@ namespace bgfx { namespace gx2
 	RendererContextI* rendererCreate(const Init& _init)
 	{
 		if (NULL == _init.swapChain.nwh && (0 != _init.swapChain.width || 0 != _init.swapChain.height)) return NULL;
-		s_renderGX2 = BX_NEW(g_allocator, RendererContextGX2)(_init);
+		s_renderGX2 = BX_ALIGNED_NEW(g_allocator, RendererContextGX2, alignof(RendererContextGX2))(_init);
 		return s_renderGX2;
 	}
 	void rendererDestroy()
 	{
-		bx::deleteObject(g_allocator, s_renderGX2); s_renderGX2 = NULL;
+		bx::deleteObject(g_allocator, s_renderGX2, alignof(RendererContextGX2)); s_renderGX2 = NULL;
 	}
 } }
 #else

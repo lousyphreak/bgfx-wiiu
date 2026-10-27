@@ -5,6 +5,7 @@ get_filename_component(BGFX_DIR "../.." ABSOLUTE)
 set(BX_DIR "${BGFX_DIR}/../bx-wiiu" CACHE PATH "bx source directory")
 set(BIMG_DIR "${BGFX_DIR}/../bimg-wiiu" CACHE PATH "bimg source directory")
 set(BGFX_SHADERC "${BGFX_DIR}/../../bin/shaderc" CACHE FILEPATH "Host shaderc with CafeGLSL/GX2 support")
+option(BGFX_GX2_UNIFORM_REGISTERS "Use direct GX2 graphics uniforms instead of uniform buffers" ON)
 add_subdirectory(${BIMG_DIR}/scripts/wiiu ${CMAKE_CURRENT_BINARY_DIR}/bimg)
 
 add_library(bgfx STATIC
@@ -25,6 +26,13 @@ add_library(bgfx STATIC
     ${BGFX_DIR}/src/renderer_gx2.cpp
 )
 
+if(BGFX_GX2_UNIFORM_REGISTERS)
+    set_property(TARGET bgfx PROPERTY BGFX_GX2_SHADER_PROFILE gx2)
+else()
+    set_property(TARGET bgfx PROPERTY BGFX_GX2_SHADER_PROFILE gx2-block)
+endif()
+target_compile_definitions(bgfx PRIVATE BGFX_CONFIG_GX2_UNIFORM_REGISTERS=$<BOOL:${BGFX_GX2_UNIFORM_REGISTERS}>)
+
 set(generated_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(embedded_includes "")
 foreach(shader IN ITEMS
@@ -39,8 +47,10 @@ foreach(shader IN ITEMS
     fs_gx2_copy_msaa_2d fs_gx2_copy_msaa_array
     fs_gx2_copy_depth_msaa_2d fs_gx2_copy_depth_msaa_array
     vs_clear fs_clear0 fs_clear1 fs_clear2 fs_clear3 fs_clear4 fs_clear5 fs_clear6 fs_clear7)
+    set(shader_profile $<TARGET_PROPERTY:bgfx,BGFX_GX2_SHADER_PROFILE>)
     if(shader MATCHES "^cs_")
         set(stage compute)
+        set(shader_profile gx2) # Compute always uses blocks, independently of graphics.
     elseif(shader MATCHES "^vs_")
         set(stage vertex)
     else()
@@ -56,7 +66,7 @@ foreach(shader IN ITEMS
     add_custom_command(OUTPUT ${output}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${generated_dir}
         COMMAND ${BGFX_SHADERC} -f ${BGFX_DIR}/src/${shader}.sc -o ${output}
-            ${raw_options} --type ${stage} --platform wiiu -p gx2 --bin2c ${shader}_gx2
+            ${raw_options} --type ${stage} --platform wiiu -p ${shader_profile} --bin2c ${shader}_gx2
             --varyingdef ${BGFX_DIR}/src/varying.def.sc -i ${BGFX_DIR}/src --depends
         DEPENDS ${BGFX_SHADERC} ${BGFX_DIR}/src/${shader}.sc
             ${BGFX_DIR}/src/varying.def.sc ${BGFX_DIR}/src/bgfx_shader.sh

@@ -156,6 +156,7 @@ namespace bgfx
 		{  ShadingLang::GLSL,  440,    "440"        },
 		{  ShadingLang::WGSL,  1010,   "wgsl"       },
 		{  ShadingLang::Gx2,   430,    "gx2"        },
+		{  ShadingLang::Gx2,   430,    "gx2-block"  },
 	};
 
 	// To be use from vertex program require:

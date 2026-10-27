@@ -154,11 +154,11 @@ namespace bgfx
 					bx::write(_messages, &err, "GX2: unsupported bgfx uniform type for %s.\n", var.name);
 					return false;
 				}
-				if (var.block < 0 || strcmp(_shader.uniformBlocks[var.block].name, "__cafe_loose_uniforms") != 0
-				|| _shader.uniformBlocks[var.block].offset != 0 || var.count > UINT8_MAX || var.offset > UINT16_MAX
+				if ((var.block >= 0 && (strcmp(_shader.uniformBlocks[var.block].name, "__cafe_loose_uniforms") != 0
+				|| _shader.uniformBlocks[var.block].offset != 0)) || var.count > UINT8_MAX || var.offset > UINT16_MAX
 				|| rows * var.count > UINT16_MAX)
 				{
-					bx::write(_messages, &err, "GX2: %s is outside the loose-uniform block-zero ABI.\n", var.name);
+					bx::write(_messages, &err, "GX2: %s is outside the loose-uniform ABI.\n", var.name);
 					return false;
 				}
 				uniform.num = uint8_t(var.count);
@@ -316,9 +316,10 @@ namespace bgfx
 		GX2VertexShader* vertex = NULL;
 		GX2PixelShader* pixel = NULL;
 		GLSLShaderResources resources{};
+		const GLSLCompileMode requestedMode = _options.profile == "gx2-block" ? GLSL_COMPILE_BLOCK : GLSL_COMPILE_REGISTER;
 		const GX2ShaderMode mode = _options.shaderType == 'v'
-			? CompileVertexShaderEx(_code.c_str(), GLSL_COMPILE_BLOCK, &vertex, diagnostics, sizeof(diagnostics), flags, &resources)
-			: CompilePixelShaderEx(_code.c_str(), GLSL_COMPILE_BLOCK, &pixel, diagnostics, sizeof(diagnostics), flags, &resources);
+			? CompileVertexShaderEx(_code.c_str(), requestedMode, &vertex, diagnostics, sizeof(diagnostics), flags, &resources)
+			: CompilePixelShaderEx(_code.c_str(), requestedMode, &pixel, diagnostics, sizeof(diagnostics), flags, &resources);
 		std::unique_ptr<GX2VertexShader, decltype(&FreeVertexShader)> vs(vertex, FreeVertexShader);
 		std::unique_ptr<GX2PixelShader, decltype(&FreePixelShader)> fs(pixel, FreePixelShader);
 		bx::ErrorAssert err;
@@ -329,7 +330,7 @@ namespace bgfx
 		{
 			GX2VertexShader* alternate = NULL;
 			const GLSL_COMPILER_FLAG variantFlags = GLSL_COMPILER_FLAG(flags | GLSL_COMPILER_FLAG_VERTEX_PRIMITIVE_ID);
-			const GX2ShaderMode variantMode = CompileVertexShaderEx(_code.c_str(), GLSL_COMPILE_BLOCK, &alternate, diagnostics, sizeof(diagnostics), variantFlags, &resources);
+			const GX2ShaderMode variantMode = CompileVertexShaderEx(_code.c_str(), requestedMode, &alternate, diagnostics, sizeof(diagnostics), variantFlags, &resources);
 			primitiveVs.reset(alternate);
 			if (diagnostics[0] != '\0') bx::write(_messages, &err, "%s\n", diagnostics);
 			if (variantMode == GLSL_SHADER_MODE_ERROR) return false;

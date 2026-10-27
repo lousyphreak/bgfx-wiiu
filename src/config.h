@@ -713,4 +713,10 @@ static_assert(BGFX_CONFIG_MAX_VERTEX_STREAMS < 32, "Must be less than 32!");
 		)
 #endif // BGFX_CONFIG_BLIT_FALLBACK
 
+/// GX2 graphics uniforms: direct registers (1) or uniform buffers (0).
+/// Compile shader assets with the matching gx2 or gx2-block shaderc profile.
+#ifndef BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+#	define BGFX_CONFIG_GX2_UNIFORM_REGISTERS 1
+#endif // BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+
 #endif // BGFX_CONFIG_H_HEADER_GUARD
