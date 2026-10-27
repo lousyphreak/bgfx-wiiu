@@ -11,7 +11,11 @@ BUFFER_RO(currPositionBuffer,    vec4, 1);
 BUFFER_WO(outPrevPositionBuffer, vec4, 2);
 BUFFER_WO(outCurrPositionBuffer, vec4, 3);
 
+#if BGFX_SHADER_LANGUAGE_GX2
+#define GROUP_SIZE threadGroupLdsSize
+#else
 #define GROUP_SIZE 512
+#endif // BGFX_SHADER_LANGUAGE_GX2
 SHARED vec3 otherEntries[GROUP_SIZE];
 
 vec3 calcAcceleration(vec3 _currPosition, vec3 _otherPosition)
@@ -31,7 +35,11 @@ void main()
 
 	vec3 newAcceleration = vec3_splat(0.0);
 
+#if BGFX_SHADER_LANGUAGE_GX2
+	for (int j = 0; j < int(u_dispatchSize * (threadGroupUpdateSize / GROUP_SIZE)); ++j)
+#else
 	for (int j = 0; j < int(u_dispatchSize); ++j)
+#endif // BGFX_SHADER_LANGUAGE_GX2
 	{
 		otherEntries[gl_LocalInvocationIndex] = currPositionBuffer[j * GROUP_SIZE + int(gl_LocalInvocationIndex)].xyz;
 

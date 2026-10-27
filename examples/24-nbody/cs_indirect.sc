@@ -12,5 +12,9 @@ NUM_THREADS(1, 1, 1)
 void main()
 {
 	drawIndexedIndirect(indirectBuffer, 0, 6, u_dispatchSize * threadGroupUpdateSize, 0, 0, 0);
+#if BGFX_SHADER_LANGUAGE_GX2
+	dispatchIndirect(indirectBuffer, 1, u_dispatchSize * (threadGroupUpdateSize / threadGroupLdsSize), 1, 1);
+#else
 	dispatchIndirect(indirectBuffer, 1, u_dispatchSize, 1, 1);
+#endif // BGFX_SHADER_LANGUAGE_GX2
 }

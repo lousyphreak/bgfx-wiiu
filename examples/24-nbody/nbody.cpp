@@ -360,7 +360,13 @@ public:
 				}
 				else
 				{
+#if BX_PLATFORM_WIIU
+					// Match the GX2 shader's 64-lane LDS tile without changing particle count.
+					const uint16_t groups = uint16_t(m_paramsData.dispatchSize * (bgfx::getRendererType() == bgfx::RendererType::Gx2 ? 8 : 1));
+					bgfx::dispatch(0, m_updateInstancesProgram, groups, 1, 1);
+#else
 					bgfx::dispatch(0, m_updateInstancesProgram, uint16_t(m_paramsData.dispatchSize), 1, 1);
+#endif // BX_PLATFORM_WIIU
 				}
 
 				bx::swap(m_currPositionBuffer0, m_currPositionBuffer1);
