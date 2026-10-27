@@ -49,14 +49,15 @@ void main()
 	nativeCommands[dest + 0u] = nativeBytes(uvec4(0xc0016f00u, 0u, arg.w, 0xc0016f00u));
 	nativeCommands[dest + 1u] = nativeBytes(uvec4(1u, startInstance, 0xc0016800u, 0x256u));
 	nativeCommands[dest + 2u] = nativeBytes(uvec4(draw.z & 31u, 0xc0002a00u, draw.w, 0xc0002f00u));
-	nativeCommands[dest + 3u] = nativeBytes(uvec4(instances, 0xc0042701u, 0xffffffffu, indexAddress));
+	// Suppressed records must not launch a native draw with uninitialized arguments.
+	nativeCommands[dest + 3u] = nativeBytes(uvec4(instances, count != 0u ? 0xc0042701u : 0xc0041000u, 0xffffffffu, indexAddress));
 	nativeCommands[dest + 4u] = nativeBytes(uvec4(0u, count, majorMode, 0xc0016f00u));
 	nativeCommands[dest + 5u] = nativeBytes(uvec4(1u, 0u, 0x80000000u, 0x80000000u));
 #else
 	uint dest = record * 5u;
 	nativeCommands[dest + 0u] = nativeBytes(uvec4(0xc0016f00u, 0u, arg.z, 0xc0016f00u));
 	nativeCommands[dest + 1u] = nativeBytes(uvec4(1u, arg.w, 0xc0016800u, 0x256u));
-	nativeCommands[dest + 2u] = nativeBytes(uvec4(draw.z & 31u, 0xc0002f00u, instances, 0xc0012d01u));
+	nativeCommands[dest + 2u] = nativeBytes(uvec4(draw.z & 31u, 0xc0002f00u, instances, count != 0u ? 0xc0012d01u : 0xc0011000u));
 	nativeCommands[dest + 3u] = nativeBytes(uvec4(count, 2u | majorMode, 0xc0016f00u, 1u));
 	nativeCommands[dest + 4u] = nativeBytes(uvec4(0u, 0x80000000u, 0x80000000u, 0x80000000u));
 #endif
