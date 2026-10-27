@@ -1210,7 +1210,13 @@ namespace bgfx { namespace gx2
 			program.m_predefined = program.vertex->predefined;
 			program.m_predefined.insert(program.m_predefined.end(), program.fragment->predefined.begin(), program.fragment->predefined.end());
 			program.m_numPredefined = uint16_t(program.m_predefined.size());
-
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+			// This one matrix overwrites every word of both stages' uniform storage.
+			program.mvpOnly = program.m_numPredefined == 1
+				&& program.m_predefined[0].m_type == PredefinedUniform::ModelViewProj
+				&& program.m_predefined[0].m_loc == 0 && program.m_predefined[0].m_count == 4
+				&& program.vertex->uniformSize == 64 && program.fragment->uniformSize == 0;
+#endif
 		}
 
 		void destroyProgram(ProgramHandle _handle) override
@@ -1219,7 +1225,7 @@ namespace bgfx { namespace gx2
 			if (m_boundProgram == &program) m_boundProgram = NULL;
 			for (Fetch& fetch : program.fetches) retire(fetch.program);
 			program.fetches.clear(); program.vertex = NULL; program.fragment = NULL; program.compute = NULL;
-			program.primitiveId = false; program.samplerMask = 0;
+			program.primitiveId = false; program.mvpOnly = false; program.samplerMask = 0;
 			program.m_predefined.clear(); program.m_numPredefined = 0;
 		}
 
@@ -3052,6 +3058,14 @@ namespace bgfx { namespace gx2
 			reserveBatch(1, bytes);
 #endif
 			GX2_PROFILE_SCOPE(UniformFill);
+#if BGFX_CONFIG_GX2_UNIFORM_REGISTERS
+			if (_program.mvpOnly)
+			{
+				m_stageData[0] = m_uniformData[0];
+				GX2_PROFILE_ADD(UniformBytes, 64);
+				return; // The following full MVP write needs neither zeroing nor default copies.
+			}
+#endif
 			for (uint32_t stage = 0; stage < 2; ++stage)
 			{
 				Shader& shader = *(stage ? _program.fragment : _program.vertex);
