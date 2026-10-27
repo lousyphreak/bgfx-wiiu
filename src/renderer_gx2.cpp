@@ -1106,6 +1106,14 @@ namespace bgfx { namespace gx2
 			{
 				loadComputeShader(shader, gfd, gfdSize);
 				const GX2ComputeShader* native = (const GX2ComputeShader*)shader.header->data;
+#if BGFX_CONFIG_GX2_PROFILER >= 4
+				uint32_t codeHash = UINT32_C(2166136261);
+				for (uint32_t ii = 0; ii < programSize; ++ii)
+					codeHash = (codeHash^((const uint8_t*)shader.program->data)[ii])*UINT32_C(16777619);
+				OSReport("GX2_PROFILE_SHADER codeBytes=%u fnv=%08x gprs=%u waves=%u group=%u,%u,%u\n",
+					programSize, codeHash, native->regs[0]&255, native->wavesPerSimd,
+					native->workGroupSizeX, native->workGroupSizeY, native->workGroupSizeZ);
+#endif
 				block = GX2GetComputeUniformBlock(native, "__cafe_loose_uniforms");
 				loaded = TRUE;
 			}
@@ -1366,7 +1374,7 @@ namespace bgfx { namespace gx2
 		void uploadTextures()
 		{
 			GX2_PROFILE_SCOPE(TextureUpload);
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 			const int profileUpload = m_pendingTextures.empty() ? -1 : s_gx2Profiler.beginUpload();
 #endif
 			bool published = false;
@@ -1441,7 +1449,7 @@ namespace bgfx { namespace gx2
 			// after this group; invalidate its input cache once for the whole group.
 			GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, NULL, UINT32_MAX);
 			m_pendingTextures.clear();
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 			s_gx2Profiler.endUpload(profileUpload);
 #endif
 		}
@@ -1797,7 +1805,7 @@ namespace bgfx { namespace gx2
 		{
 			if (0 == (_render->m_debug & BGFX_DEBUG_PROFILER))
 			{
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 				return beginGpuTimer(_view, _render->m_frameNum);
 #else
 				return UINT32_MAX;
@@ -1814,7 +1822,7 @@ namespace bgfx { namespace gx2
 		{
 			if (_index == UINT32_MAX) return;
 			endGpuTimer(_index);
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 			if (0 == (_render->m_debug & BGFX_DEBUG_PROFILER)) return;
 #endif
 			ViewStats& stats = _render->m_perfStats.viewStats[_render->m_perfStats.numViews++];
@@ -3073,16 +3081,16 @@ namespace bgfx { namespace gx2
 				const GX2PixelShader* fragment = (const GX2PixelShader*)shader.header->data;
 				const uint32_t count = stage ? fragment->initialValueCount : vertex->initialValueCount;
 				const GX2UniformInitialValue* initial = stage ? fragment->initialValues : vertex->initialValues;
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 				if (count) { GX2_PROFILE_SCOPE(UniformInitial);
 #endif
 				for (uint32_t ii = 0; ii < count; ++ii)
 					writeFloats<BGFX_CONFIG_GX2_UNIFORM_REGISTERS>(m_stageData[stage]+initial[ii].offset*4, initial[ii].value, 4);
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 				}
 #endif
 				// Application values override native initializers; predefined fields follow.
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 				if (!shader.uniforms.empty()) { GX2_PROFILE_SCOPE(UniformApplication);
 #endif
 				for (const Uniform& uniform : shader.uniforms)
@@ -3096,7 +3104,7 @@ namespace bgfx { namespace gx2
 					}
 					else writeFloats<BGFX_CONFIG_GX2_UNIFORM_REGISTERS>(dst, src, uniform.rows*4);
 				}
-#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER < 3
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
 				}
 #endif
 			}
@@ -4475,6 +4483,9 @@ namespace bgfx { namespace gx2
 				GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), uniform->data, shader.uniformSize);
 				GX2SetComputeUniformBlock(0, shader.uniformSize, uniform->data); retire(uniform);
 			}
+#if BGFX_CONFIG_GX2_PROFILER >= 4
+			if (_commands) s_gx2Profiler.startGpu(true, native->size);
+#endif
 			if (_commands) callIndirect(_commands, 64, 80);
 			else
 			{
@@ -4486,8 +4497,14 @@ namespace bgfx { namespace gx2
 				const uint32_t waves = (native->workGroupSizeX*native->workGroupSizeY*native->workGroupSizeZ+63)/64;
 				dispatch->groupCountX = _compute.m_numX*waves; dispatch->groupCountY = _compute.m_numY; dispatch->groupCountZ = _compute.m_numZ; dispatch->padding = 0;
 				GX2Invalidate(GX2_INVALIDATE_MODE_CPU, params->data, sizeof(*dispatch));
+#if BGFX_CONFIG_GX2_PROFILER >= 4
+				s_gx2Profiler.startGpu(true, native->size);
+#endif
 				GX2DispatchCompute(dispatch); retire(params);
 			}
+#if BGFX_CONFIG_GX2_PROFILER >= 4
+			s_gx2Profiler.end();
+#endif
 			touch(shader.header); touch(shader.program);
 			// Export publication belongs to this producer, before any copy, sampled
 			// alias or attribute reader. The stable region may be reused afterward.

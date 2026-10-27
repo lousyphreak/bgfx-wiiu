@@ -81,7 +81,7 @@ target_include_directories(bgfx PUBLIC ${BGFX_DIR}/include PRIVATE ${BGFX_DIR}/3
 target_compile_options(bgfx PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(bgfx PUBLIC BGFX_CONFIG_MULTITHREADED=$<BOOL:${BGFX_CONFIG_MULTITHREADED}>
     PRIVATE BGFX_CONFIG_VIDEO=0 BGFX_CONFIG_MIP_GEN_FALLBACK=0 BGFX_CONFIG_BLIT_FALLBACK=0)
-set(BGFX_GX2_PROFILER 0 CACHE STRING "GX2 profiling: 0 off, 1 cycles/cache, 2 stalls, 3 low-overhead timing")
+set(BGFX_GX2_PROFILER 0 CACHE STRING "GX2 profiling: 0 off, 1 cycles/cache, 2 stalls, 3 coarse, 4-11 dispatch ALU/stalls/caches/occupancy/memory/fetch")
 target_compile_definitions(bgfx PRIVATE BGFX_CONFIG_GX2_PROFILER=${BGFX_GX2_PROFILER})
 target_link_libraries(bgfx PUBLIC bimg)
 
