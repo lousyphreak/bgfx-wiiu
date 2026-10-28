@@ -4494,7 +4494,7 @@ namespace bgfx { namespace gx2
 				GX2SetComputeUniformBlock(0, shader.uniformSize, uniform->data); retire(uniform);
 			}
 			}
-#if BGFX_CONFIG_GX2_PROFILER >= 4
+#if BGFX_CONFIG_GX2_PROFILER >= 4 && BGFX_CONFIG_GX2_PROFILER <= 11
 			if (_commands) s_gx2Profiler.startGpu(true, native->size);
 #endif
 			if (_commands) callIndirect(_commands, 64, 80);
@@ -4508,12 +4508,12 @@ namespace bgfx { namespace gx2
 				const uint32_t waves = (native->workGroupSizeX*native->workGroupSizeY*native->workGroupSizeZ+63)/64;
 				dispatch->groupCountX = _compute.m_numX*waves; dispatch->groupCountY = _compute.m_numY; dispatch->groupCountZ = _compute.m_numZ; dispatch->padding = 0;
 				GX2Invalidate(GX2_INVALIDATE_MODE_CPU, params->data, sizeof(*dispatch));
-#if BGFX_CONFIG_GX2_PROFILER >= 4
+#if BGFX_CONFIG_GX2_PROFILER >= 4 && BGFX_CONFIG_GX2_PROFILER <= 11
 				s_gx2Profiler.startGpu(true, native->size);
 #endif
 				GX2DispatchCompute(dispatch); retire(params);
 			}
-#if BGFX_CONFIG_GX2_PROFILER >= 4
+#if BGFX_CONFIG_GX2_PROFILER >= 4 && BGFX_CONFIG_GX2_PROFILER <= 11
 			s_gx2Profiler.end();
 #endif
 			{ GX2_PROFILE_COMPUTE(ComputePublish, _frame->m_frameNum, _exports ? _exports->size : 0);
@@ -4810,6 +4810,11 @@ namespace bgfx { namespace gx2
 				vertexInput(program, draw);
 				uint32_t count = 0;
 				Block* occlusion = hasOcclusionQuery ? beginOcclusion(draw.m_occlusionQuery) : NULL;
+#if BGFX_CONFIG_GX2_PROFILER >= 12
+				endBatch();
+				s_gx2Profiler.startGpu(true, ((const GX2PixelShader*)program.fragment->header->data)->size);
+				beginBatch();
+#endif
 				if (!indirect.empty())
 				{
 					// Generated IBs must be called from the command buffer, not inside
@@ -4850,6 +4855,9 @@ namespace bgfx { namespace gx2
 							}
 					{ GX2_PROFILE_SCOPE(DirectDraw); GX2DrawEx(primitive, count, 0, draw.m_numInstances); }
 				}
+#if BGFX_CONFIG_GX2_PROFILER >= 12
+				endBatch(); s_gx2Profiler.end(); beginBatch();
+#endif
 				graphicsImagesWritten(images, program, _render->m_renderBind[draw.m_bindIdx]);
 				if (occlusion) endOcclusion(occlusion);
 				static const uint8_t divisor[] = {3, 1, 2, 1, 1}, subtract[] = {0, 2, 0, 1, 0};

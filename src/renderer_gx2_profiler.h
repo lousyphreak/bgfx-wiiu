@@ -7,6 +7,7 @@
 // 2: CPU unresolved stalls/instructions/L1 load-miss cycles/branch misses;
 // 3: low-overhead whole-cycle CPU/GPU and coarse renderer timing, without per-draw probes.
 // 4-11: detailed CPU counters plus dispatch-only ALU/stalls/caches/occupancy/memory/fetch.
+// 12/13/14/15: pixel-shader ALU/stalls/cache/occupancy around graphics draws.
 // Dispatch presets sample one native launch in sixteen, before output publication/copies.
 // Detailed scopes are inclusive. Compare final changes with mode 3 as well.
 #ifndef BGFX_CONFIG_GX2_PROFILER
@@ -141,8 +142,8 @@ namespace bgfx { namespace gx2
 				if (ready)
 				{
 #if BGFX_CONFIG_GX2_PROFILER >= 4
-					OSReport("GX2_PROFILE_DISPATCH mode=%u codeBytes=%u gpuUs=%.3f counters=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
-						BGFX_CONFIG_GX2_PROFILER, sample.codeBytes, double(sample.end[0]-sample.begin[0])/27,
+					OSReport("GX2_PROFILE_%s mode=%u codeBytes=%u gpuUs=%.3f counters=%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+						BGFX_CONFIG_GX2_PROFILER >= 12 ? "DRAW" : "DISPATCH", BGFX_CONFIG_GX2_PROFILER, sample.codeBytes, double(sample.end[0]-sample.begin[0])/27,
 						(unsigned long long)values[0], (unsigned long long)values[1],
 						(unsigned long long)values[2], (unsigned long long)values[3],
 						(unsigned long long)values[4], (unsigned long long)values[5],
@@ -177,15 +178,33 @@ namespace bgfx { namespace gx2
 		}
 
 #if BGFX_CONFIG_GX2_PROFILER != 3
+#if BGFX_CONFIG_GX2_PROFILER >= 12
+		// Drain preceding/final pixels before changing counters. This GPU-only
+		// wait is confined to sampled graphics profiling ranges.
+		void waitGpuSample(uint64_t* _sample)
+		{
+			const uint32_t address = OSEffectiveToPhysical(uint32_t(uintptr_t(_sample)));
+			alignas(64) const uint32_t commands[] = {
+				UINT32_C(0xc0053c00), 0x14, address, 0, UINT32_MAX, UINT32_MAX, 4,
+			};
+			GX2CopyDisplayList(commands, sizeof(commands));
+		}
+#endif
 		void startGpu(bool _draws, uint32_t _codeBytes = 0)
 		{
 			if (_draws && (++drawFrames)%16 == 0)
 				for (uint32_t ii = 0; ii < BX_COUNTOF(samples); ++ii) if (!samples[ii].pending)
 				{
-					active = int(ii); GX2SetCounterInfo(&info); GX2ResetCounters(&info); GX2StartCounters(&info);
+					active = int(ii);
+#if BGFX_CONFIG_GX2_PROFILER >= 12
+					GX2SampleBottomGPUCycle(samples[ii].begin); waitGpuSample(samples[ii].begin);
+#endif
+					GX2SetCounterInfo(&info); GX2ResetCounters(&info); GX2StartCounters(&info);
 #if BGFX_CONFIG_GX2_PROFILER >= 4
 					samples[ii].codeBytes = _codeBytes;
+					#if BGFX_CONFIG_GX2_PROFILER < 12
 					GX2SampleBottomGPUCycle(samples[ii].begin);
+#endif
 #endif
 					break;
 				}
@@ -226,6 +245,9 @@ namespace bgfx { namespace gx2
 			{
 #if BGFX_CONFIG_GX2_PROFILER >= 4
 				GX2SampleBottomGPUCycle(samples[active].end);
+#if BGFX_CONFIG_GX2_PROFILER >= 12
+				waitGpuSample(samples[active].end);
+#endif
 #endif
 				GX2StopCounters(&info); GX2SampleCountersEx(&info, samples[active].data);
 				samples[active].pending = true; active = -1;
@@ -310,8 +332,8 @@ namespace bgfx { namespace gx2
 #endif
 #if BGFX_CONFIG_GX2_PROFILER != 3
 		struct Counter { GX2PerfCounter counter; GX2PerfEvent stat; const char* name; };
-		// Numeric SQ/SPI selectors follow the native performance enum. SQ per-type
-		// events require ES (0x800); omitted type bits select no shader work.
+		// Numeric selectors follow the native performance enum. SQ per-type events
+		// select ES/compute (0x800) or PS (0x100); no type bits selects no work.
 		static constexpr Counter counters[] = {
 			{GX2_PERF_COUNTER_GRBM_0, GX2_PERF_EVENT_GRBM_COUNT, "GRBM-total"},
 			{GX2_PERF_COUNTER_GRBM_1, GX2_PERF_EVENT_GRBM_GUI_ACTIVE, "GRBM-active"},
@@ -322,6 +344,34 @@ namespace bgfx { namespace gx2
 			{GX2PerfCounter(0x12), GX2PerfEvent(0x587e), "SQ-ALU-Kcache-busy"},
 			{GX2PerfCounter(0x13), GX2PerfEvent(0x601f), "SPI-ES-GPR-stall"},
 			{GX2PerfCounter(0x14), GX2PerfEvent(0x6024), "SPI-ES-thread-stall"},
+#elif BGFX_CONFIG_GX2_PROFILER == 12
+			{GX2PerfCounter(0x0f), GX2PerfEvent(0x5178), "SQ-PS-ALU-groups"},
+			{GX2PerfCounter(0x10), GX2PerfEvent(0x5179), "SQ-PS-ALU-instructions"},
+			{GX2PerfCounter(0x11), GX2PerfEvent(0x517d), "SQ-PS-Icache-busy"},
+			{GX2PerfCounter(0x12), GX2PerfEvent(0x517e), "SQ-PS-Kcache-busy"},
+			{GX2_PERF_COUNTER_TA_0_0, GX2PerfEvent(0xa000), "TA-busy"},
+			{GX2_PERF_COUNTER_TCP_0_0, GX2_PERF_EVENT_TCP_TOTAL_PIXELS, "TCP-pixels"},
+#elif BGFX_CONFIG_GX2_PROFILER == 13
+			{GX2PerfCounter(0x0f), GX2PerfEvent(0x511c), "SQ-PS-CF-no-ready-work"},
+			{GX2PerfCounter(0x10), GX2PerfEvent(0x5080), "SQ-ALU-lock-wait"},
+			{GX2PerfCounter(0x11), GX2PerfEvent(0x518c), "SQ-PS-TF-TA-stall"},
+			{GX2PerfCounter(0x12), GX2PerfEvent(0x5188), "SQ-PS-fetch-Icache-wait"},
+			{GX2_PERF_COUNTER_TCP_0_0, GX2_PERF_EVENT_TCP_TCC_STALL_CYCLES, "TCP-TCC-stall"},
+			{GX2_PERF_COUNTER_TCC_0_0, GX2PerfEvent(0xc008), "TCC-all-client-misses"},
+#elif BGFX_CONFIG_GX2_PROFILER == 14
+			{GX2PerfCounter(0x0f), GX2PerfEvent(0x50a8), "SQ-ALU-Icache-misses"},
+			{GX2PerfCounter(0x10), GX2PerfEvent(0x50bc), "SQ-ALU-Icache-memory-stall"},
+			{GX2PerfCounter(0x11), GX2PerfEvent(0x50a6), "SQ-fetch-Icache-misses"},
+			{GX2PerfCounter(0x12), GX2PerfEvent(0x50ba), "SQ-fetch-Icache-memory-stall"},
+			{GX2_PERF_COUNTER_TCP_0_0, GX2_PERF_EVENT_TCP_TCC_STALL_CYCLES, "TCP-TCC-stall"},
+			{GX2_PERF_COUNTER_TCC_0_0, GX2PerfEvent(0xc008), "TCC-all-client-misses"},
+#elif BGFX_CONFIG_GX2_PROFILER == 15
+			{GX2PerfCounter(0x0f), GX2PerfEvent(0x510d), "SQ-PS-threads"},
+			{GX2PerfCounter(0x10), GX2PerfEvent(0x510e), "SQ-PS-thread-level"},
+			{GX2PerfCounter(0x11), GX2PerfEvent(0x5017), "SQ-PS-wait-allocation"},
+			{GX2PerfCounter(0x12), GX2PerfEvent(0x5018), "SQ-PS-wait-other"},
+			{GX2PerfCounter(0x13), GX2PerfEvent(0x6034), "SPI-pointer-GPR-stall"},
+			{GX2PerfCounter(0x14), GX2PerfEvent(0x603f), "SPI-PS-thread-stall"},
 #elif BGFX_CONFIG_GX2_PROFILER == 5
 			{GX2PerfCounter(0x0f), GX2PerfEvent(0x581c), "SQ-CF-no-ready-work"},
 			{GX2PerfCounter(0x10), GX2PerfEvent(0x5080), "SQ-ALU-lock-wait"},
