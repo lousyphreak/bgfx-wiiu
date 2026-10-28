@@ -4384,15 +4384,19 @@ namespace bgfx { namespace gx2
 				return;
 			}
 			Shader& shader = *_program.compute;
+			const GX2ComputeShader* native = (const GX2ComputeShader*)shader.header->data;
 			std::vector<ComputeOutput> outputs;
 			computeLayout(shader, _bind, outputs);
 			// Canonical inputs must be materialized before entering compute mode.
+			{ GX2_PROFILE_COMPUTE(ComputeResolve, _frame->m_frameNum, _exports ? _exports->size : 0);
 			for (uint32_t unit = 0; unit < kTextureSamplers; ++unit)
 			{
 				const Binding& bind = _bind.m_bind[unit];
 				if (bind.m_idx == kInvalidHandle) continue;
 				if (bind.m_type == Binding::Texture || bind.m_type == Binding::Image) resolveTexture(m_textures[bind.m_idx]);
 			}
+			}
+			{ GX2_PROFILE_COMPUTE(ComputeSeed, _frame->m_frameNum, _exports ? _exports->size : 0);
 			for (const ComputeOutput& output : outputs)
 			{
 				const Binding& bind = _bind.m_bind[output.binding];
@@ -4418,6 +4422,8 @@ namespace bgfx { namespace gx2
 			}
 			// All seed copies precede the producer. No CPU writeback of export bytes.
 			if (!outputs.empty()) GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, _exports->data, _exports->size);
+			}
+			{ GX2_PROFILE_COMPUTE(ComputeSetup, _frame->m_frameNum, _exports ? _exports->size : 0);
 			// Native surface copies disable state shadowing and clobber pipeline state.
 			GX2SetContextState(m_context);
 			GX2SetShaderMode(GX2_SHADER_MODE_COMPUTE_SHADER);
@@ -4469,7 +4475,6 @@ namespace bgfx { namespace gx2
 			}
 			GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), layout->data, 512);
 			GX2SetComputeUniformBlock(15, 512, layout->data); retire(layout);
-			const GX2ComputeShader* native = (const GX2ComputeShader*)shader.header->data;
 			if (shader.uniformSize)
 			{
 				Block* uniform = allocate(shader.uniformSize, 256);
@@ -4486,6 +4491,7 @@ namespace bgfx { namespace gx2
 				_viewState.setPredefined<4>(this, _view, _renderView, _program, _frame, _compute);
 				GX2Invalidate(GX2InvalidateMode(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), uniform->data, shader.uniformSize);
 				GX2SetComputeUniformBlock(0, shader.uniformSize, uniform->data); retire(uniform);
+			}
 			}
 #if BGFX_CONFIG_GX2_PROFILER >= 4
 			if (_commands) s_gx2Profiler.startGpu(true, native->size);
@@ -4509,6 +4515,7 @@ namespace bgfx { namespace gx2
 #if BGFX_CONFIG_GX2_PROFILER >= 4
 			s_gx2Profiler.end();
 #endif
+			{ GX2_PROFILE_COMPUTE(ComputePublish, _frame->m_frameNum, _exports ? _exports->size : 0);
 			touch(shader.header); touch(shader.program);
 			// Export publication belongs to this producer, before any copy, sampled
 			// alias or attribute reader. The stable region may be reused afterward.
@@ -4519,6 +4526,8 @@ namespace bgfx { namespace gx2
 				GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, data, output.size);
 			}
 			GX2SetShaderMode(kGraphicsShaderMode);
+			}
+			{ GX2_PROFILE_COMPUTE(ComputeMaterialize, _frame->m_frameNum, _exports ? _exports->size : 0);
 			for (const ComputeOutput& output : outputs)
 			{
 				const Binding& bind = _bind.m_bind[output.binding];
@@ -4542,6 +4551,7 @@ namespace bgfx { namespace gx2
 					if (convert) endBatch();
 					transferWritten(texture, bind.m_firstMip, bind.m_firstLayer, output.layers);
 				}
+			}
 			}
 			if (_exports) touch(_exports);
 		}

@@ -33,7 +33,7 @@ namespace bgfx { namespace gx2
 			UniformInvalidate, ListFinish, ListCall, VertexUpload, IndexUpload,
 			BufferCopy, BufferPublish, BufferPreserve, StageReuse, TextureStage,
 			TextureUpload, TexturePublish, Textures, VertexInput, PipelineState,
-			Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild, OcclusionResolve, AttachmentWrites, PrepareTextures, GraphicsImagesBind, GraphicsImagesWritten, DirectDraw, ExportPrepass, DrawLoop,
+			ComputeResolve, ComputeSeed, ComputeSetup, ComputePublish, ComputeMaterialize, Sort, ResolveTimers, Collect, Present, Scissor, FrameBufferBuild, OcclusionResolve, AttachmentWrites, PrepareTextures, GraphicsImagesBind, GraphicsImagesWritten, DirectDraw, ExportPrepass, DrawLoop,
 			// Coarse phases/waits also measure actual thread CPU, excluding sleep.
 			Submit, EndFrame, Flip, ListWait, UniformWait, BufferReadWait,
 			ReadbackWait, FlipWait, PresentGpuWait, PhaseCount
@@ -159,7 +159,9 @@ namespace bgfx { namespace gx2
 				DCInvalidateRange(sample.begin, 64); DCInvalidateRange(sample.end, 64);
 				if (sample.begin[0] != GX2_GPU_TIMESTAMP_INVALID && sample.end[0] != GX2_GPU_TIMESTAMP_INVALID)
 				{
-					uploadTicks += sample.end[0]-sample.begin[0]; ++uploadSamples; sample.pending = false;
+					if (sample.phase == PhaseCount) { uploadTicks += sample.end[0]-sample.begin[0]; ++uploadSamples; }
+					else OSReport("GX2_PROFILE_COMPUTE_PHASE phase=%s frame=%u gpuUs=%.3f capacityBytes=%u\n", phaseName(sample.phase), sample.frame, double(sample.end[0]-sample.begin[0])/27, sample.bytes);
+					sample.pending = false;
 				}
 			}
 #endif
@@ -189,10 +191,11 @@ namespace bgfx { namespace gx2
 				}
 		}
 
-		int beginUpload()
+		int beginUpload(Phase _phase = PhaseCount, uint32_t _frame = 0, uint32_t _bytes = 0)
 		{
 			for (uint32_t ii = 0; ii < BX_COUNTOF(uploads); ++ii) if (!uploads[ii].pending)
 			{
+				uploads[ii].phase = _phase; uploads[ii].frame = _frame; uploads[ii].bytes = _bytes;
 				GX2SampleBottomGPUCycle(uploads[ii].begin); return int(ii);
 			}
 			return -1; // Profiling never waits for a free sample.
@@ -202,6 +205,18 @@ namespace bgfx { namespace gx2
 			if (_index < 0) return;
 			GX2SampleBottomGPUCycle(uploads[_index].end); uploads[_index].pending = true;
 		}
+
+		// Phase timestamps share the asynchronous upload sample pool; no waits.
+		struct ComputeScope
+		{
+			Gx2Profiler& profiler;
+			Scope cpu;
+			int sample;
+			ComputeScope(Gx2Profiler& _profiler, Phase _phase, uint32_t _frame, uint32_t _bytes)
+				: profiler(_profiler), cpu(_profiler, _phase)
+				, sample((_frame & 15) ? -1 : _profiler.beginUpload(_phase, _frame, _bytes)) {}
+			~ComputeScope() { profiler.endUpload(sample); }
+		};
 #endif
 
 		void end()
@@ -227,6 +242,20 @@ namespace bgfx { namespace gx2
 #endif
 		}
 
+#if BGFX_CONFIG_GX2_PROFILER != 3
+		static const char* phaseName(Phase _phase)
+		{
+			static const char* names[] = {
+				"ListAcquire", "UniformAcquire", "UniformFill", "UniformZero", "UniformInitial", "UniformApplication",
+				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformBind", "UniformInvalidate", "ListFinish", "ListCall",
+				"VertexUpload", "IndexUpload", "BufferCopy", "BufferPublish", "BufferPreserve", "StageReuse",
+				"TextureStage", "TextureUpload", "TexturePublish", "Textures", "VertexInput", "PipelineState",
+				"ComputeResolve", "ComputeSeed", "ComputeSetup", "ComputePublish", "ComputeMaterialize", "Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "OcclusionResolve", "AttachmentWrites", "PrepareTextures", "GraphicsImagesBind", "GraphicsImagesWritten", "DirectDraw", "ExportPrepass", "DrawLoop", "Submit", "EndFrame", "Flip", "ListWait",
+				"UniformWait", "BufferReadWait", "ReadbackWait", "FlipWait", "PresentGpuWait" };
+			return names[_phase];
+		}
+#endif
+
 		void report(uint32_t _frame, bool _vsync)
 		{
 			std::sort(intervals, intervals+120);
@@ -239,13 +268,6 @@ namespace bgfx { namespace gx2
 			coarse[0] = coarse[1] = coarse[2] = sortCpu = 0;
 #endif
 #if BGFX_CONFIG_GX2_PROFILER != 3
-			static const char* names[] = {
-				"ListAcquire", "UniformAcquire", "UniformFill", "UniformZero", "UniformInitial", "UniformApplication",
-				"UniformPredefined", "UniformEnd", "UniformPublish", "UniformBind", "UniformInvalidate", "ListFinish", "ListCall",
-				"VertexUpload", "IndexUpload", "BufferCopy", "BufferPublish", "BufferPreserve", "StageReuse",
-				"TextureStage", "TextureUpload", "TexturePublish", "Textures", "VertexInput", "PipelineState",
-				"Sort", "ResolveTimers", "Collect", "Present", "Scissor", "FrameBufferBuild", "OcclusionResolve", "AttachmentWrites", "PrepareTextures", "GraphicsImagesBind", "GraphicsImagesWritten", "DirectDraw", "ExportPrepass", "DrawLoop", "Submit", "EndFrame", "Flip", "ListWait",
-				"UniformWait", "BufferReadWait", "ReadbackWait", "FlipWait", "PresentGpuWait" };
 			OSReport("GX2_PROFILE_EVENTS bank=%u names=%s\n", BGFX_CONFIG_GX2_PROFILER,
 #if BGFX_CONFIG_GX2_PROFILER == 1 || BGFX_CONFIG_GX2_PROFILER >= 4
 				"cycles,instructions,L2-data-misses,L2-castouts");
@@ -256,7 +278,7 @@ namespace bgfx { namespace gx2
 			{
 				const Sum& sum = phases[ii];
 				OSReport("GX2_PROFILE_PHASE phase=%s n=%u inclusiveUs=%.3f threadUs=%.3f events=%llu,%llu,%llu,%llu\n",
-					names[ii], sum.calls, double(sum.ticks)/62.15625, ii >= Submit ? double(sum.thread)/62.15625 : -1.0,
+					phaseName(Phase(ii)), sum.calls, double(sum.ticks)/62.15625, ii >= Submit ? double(sum.thread)/62.15625 : -1.0,
 					(unsigned long long)sum.events[0], (unsigned long long)sum.events[1],
 					(unsigned long long)sum.events[2], (unsigned long long)sum.events[3]);
 			}
@@ -368,7 +390,7 @@ namespace bgfx { namespace gx2
 		};
 		alignas(64) GX2PerfCounterInfo info;
 		GpuSample samples[8];
-		struct UploadSample { alignas(64) uint64_t begin[8], end[8]; bool pending = false; };
+		struct UploadSample { alignas(64) uint64_t begin[8], end[8]; Phase phase; uint32_t frame, bytes; bool pending = false; };
 		UploadSample uploads[32];
 		uint64_t uploadTicks = 0;
 		uint32_t uploadSamples = 0;
@@ -406,4 +428,10 @@ namespace bgfx { namespace gx2
 #define GX2_PROFILE_SORT() Gx2Profiler::ThreadScope gx2SortScope(s_gx2Profiler.sortCpu)
 #else
 #define GX2_PROFILE_SORT() GX2_PROFILE_SCOPE(Sort)
+#endif
+
+#if BGFX_CONFIG_GX2_PROFILER && BGFX_CONFIG_GX2_PROFILER != 3
+#define GX2_PROFILE_COMPUTE(_phase, _frame, _bytes) Gx2Profiler::ComputeScope BX_CONCATENATE(gx2ComputeScope, __LINE__)(s_gx2Profiler, Gx2Profiler::_phase, _frame, _bytes)
+#else
+#define GX2_PROFILE_COMPUTE(_phase, _frame, _bytes) do {} while (0)
 #endif
