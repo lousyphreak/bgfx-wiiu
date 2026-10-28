@@ -720,20 +720,19 @@ namespace bgfx { namespace gx2
 			_buffer.gpuWritten = true;
 		}
 
-		GX2Surface gpuRawView(Block* _block, uint32_t _offset)
+		GX2Surface gpuRawView(Block* _block, uint32_t _offset, uint32_t _shift)
 		{
 			const uint32_t chunk = GX2_MAX_TEXTURE_WIDTH*GX2_MAX_TEXTURE_HEIGHT;
 			const uint32_t base = _offset/chunk*chunk;
 			const uint32_t bytes = bx::min(chunk, _block->size-base);
 			const uint32_t width = bx::min<uint32_t>(GX2_MAX_TEXTURE_WIDTH, bytes);
-			GX2Surface view = transferLinear(GX2_SURFACE_FORMAT_UNORM_R8, width, (bytes+width-1)/width);
+			GX2Surface view = transferLinear(_shift == 4 ? GX2_SURFACE_FORMAT_UINT_R32_G32_B32_A32 : _shift ? GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8 : GX2_SURFACE_FORMAT_UNORM_R8, width >> _shift, (bytes+width-1)/width);
 			view.image = (uint8_t*)_block->data+base;
 			return view;
 		}
 
-		// Both Blocks come from gpuBufferAllocate: the complete native R8 imageSize
-		// is owned, including the final padded row. R8 copies carry individual bytes;
-		// there is no 16/32-bit component endian conversion or CPU reinterpretation.
+		// Keep the R8 byte pitch/backing, but copy aligned data as vector pixels.
+		// UINT preserves arbitrary DWORD bits; RGBA8 and R8 cover smaller alignments.
 		void gpuCopyRows(Block* _src, uint32_t _srcOffset, uint32_t _srcPitch,
 			Block* _dst, uint32_t _dstOffset, uint32_t _dstPitch, uint32_t _rowBytes, uint32_t _rows)
 		{
@@ -743,15 +742,17 @@ namespace bgfx { namespace gx2
 				_rows = 1;
 			}
 			const uint32_t chunk = GX2_MAX_TEXTURE_WIDTH*GX2_MAX_TEXTURE_HEIGHT;
+			const uint32_t alignment = _srcOffset | _srcPitch | _dstOffset | _dstPitch | _rowBytes;
+			const uint32_t shift = !(alignment & 15) ? 4 : !(alignment & 3) ? 2 : 0;
 			uint32_t row = 0, remaining = _rowBytes;
 			uint32_t srcOffset = _srcOffset, dstOffset = _dstOffset;
 			while (row < _rows)
 			{
-				GX2Surface src = gpuRawView(_src, srcOffset);
-				GX2Surface dst = gpuRawView(_dst, dstOffset);
+				GX2Surface src = gpuRawView(_src, srcOffset, shift);
+				GX2Surface dst = gpuRawView(_dst, dstOffset, shift);
 				const uint32_t srcBase = srcOffset/chunk, dstBase = dstOffset/chunk;
-				const uint32_t srcPitch = GX2GetSurfaceMipPitch(&src, 0);
-				const uint32_t dstPitch = GX2GetSurfaceMipPitch(&dst, 0);
+				const uint32_t srcPitch = GX2GetSurfaceMipPitch(&src, 0) << shift;
+				const uint32_t dstPitch = GX2GetSurfaceMipPitch(&dst, 0) << shift;
 				GX2Rect rects[GX2_MAX_COPY_SURFACE_EX_RECTS];
 				GX2Point points[GX2_MAX_COPY_SURFACE_EX_RECTS];
 				uint32_t count = 0;
@@ -763,8 +764,8 @@ namespace bgfx { namespace gx2
 					uint32_t height = 1;
 					if (_rows == 1 && sx == 0 && dx == 0 && srcPitch == dstPitch && width == srcPitch)
 						height = bx::min(remaining/width, src.height-sy, dst.height-dy);
-					rects[count] = { int32_t(sx), int32_t(sy), int32_t(sx+width), int32_t(sy+height) };
-					points[count] = { int32_t(dx), int32_t(dy) };
+					rects[count] = { int32_t(sx >> shift), int32_t(sy), int32_t((sx+width) >> shift), int32_t(sy+height) };
+					points[count] = { int32_t(dx >> shift), int32_t(dy) };
 					++count;
 					const uint32_t bytes = width*height;
 					srcOffset += bytes; dstOffset += bytes; remaining -= bytes;
