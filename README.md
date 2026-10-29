@@ -10,6 +10,7 @@
     <a href="https://bkaradzic.github.io/bgfx/build.html">Building</a> -
     <a href="https://bkaradzic.github.io/bgfx/overview.html#getting-involved">Getting Involved</a> -
     <a href="https://bkaradzic.github.io/bgfx/examples.html">Examples</a> -
+    <a href="#wii-u-examples">Wii U</a> -
     <a href="https://bkaradzic.github.io/bgfx/bgfx.html">API Reference</a> -
     <a href="https://bkaradzic.github.io/bgfx/tools.html">Tools</a> -
     <a href="#who-is-using-it-madewithbgfx">Who is using it?</a> -
@@ -49,6 +50,7 @@ Supported rendering backends:
  * OpenGL 4.3+
  * OpenGL ES 3.0+
  * Vulkan
+ * Wii U GX2
  * WebGL 2.0
  * WebGPU (Dawn Native only)
 
@@ -62,6 +64,7 @@ Supported platforms:
  * RaspberryPi
  * UWP (Universal Windows, Xbox One)
  * Wasm/Emscripten
+ * Wii U
  * Windows (7+)
 
 Supported compilers:
@@ -89,6 +92,91 @@ Languages:
  * [Rust language API bindings (new)](https://github.com/emoon/bgfx-rs)
  * [Swift language API bindings](https://github.com/stuartcarnie/SwiftBGFX)
  * [Zig language API bindings](https://github.com/bkaradzic/bgfx/tree/master/bindings/zig)
+
+## Wii U examples
+
+The native GX2 backend uses WUT and the SDL3 example entry. **Works** means the
+example has been verified on a physical Wii U. Unsupported means unavailable
+in this port; the reason is listed per example. Headless rendering is omitted.
+
+**Timing setup:** physical Wii U, 1280×720, Release build, direct graphics uniform
+registers, default example settings, and the default inline entry
+(`BGFX_RENDER_THREAD` unset). Measurements were taken on 29 October 2026 using
+the low-overhead `BGFX_GX2_PROFILER=3` mode: three 120-frame windows after at least
+240 warm-up frames. Startup, asset loading and screenshots are outside the samples.
+
+- **CPU:** active main-thread time per frame, including example code and inline
+  bgfx rendering. Sleeping, including VSync waits, is excluded. Additional
+  application worker threads are not summed.
+- **GPU:** bgfx rendering/resolve timestamp span per frame, before display
+  copying, swap and VSync waiting. This span can include command-feed gaps.
+
+These are representative work times, **not VSync-paced frame intervals or FPS**.
+Timings cover the listed/default settings rather than every interactive mode.
+
+| Example | Console status | CPU (ms/frame) | GPU (ms/frame) | Notes |
+| --- | --- | ---: | ---: | --- |
+| [00-helloworld](examples/00-helloworld) | Works | 0.87 | 0.50 |  |
+| [01-cubes](examples/01-cubes) | Works | 0.92 | 0.67 |  |
+| [02-metaballs](examples/02-metaballs) | Works | 28.19 | 0.80 |  |
+| [03-raymarch](examples/03-raymarch) | Works | 0.53 | 62.85 |  |
+| [04-mesh](examples/04-mesh) | Works | 0.57 | 1.09 |  |
+| [05-instancing](examples/05-instancing) | Works | 0.85 | 0.73 |  |
+| [06-bump](examples/06-bump) | Works | 0.57 | 2.51 |  |
+| [07-callback](examples/07-callback) | Works, not benchmarked | — | — | Previously verified; SD video recording excluded from benchmarking. |
+| [08-update](examples/08-update) | Works | 4.99 | 10.38 |  |
+| [09-hdr](examples/09-hdr) | Works | 1.11 | 10.12 |  |
+| [10-font](examples/10-font) | Works | 0.62 | 0.59 |  |
+| [11-fontsdf](examples/11-fontsdf) | Works | 1.66 | 1.47 |  |
+| [12-lod](examples/12-lod) | Works | 0.64 | 0.91 |  |
+| [13-stencil](examples/13-stencil) | Works | 0.84 | 3.80 |  |
+| [14-shadowvolumes](examples/14-shadowvolumes) | Works | 20.50 | 9.43 |  |
+| [15-shadowmaps-simple](examples/15-shadowmaps-simple) | Works | 0.71 | 2.53 |  |
+| [16-shadowmaps](examples/16-shadowmaps) | Works | 1.49 | 6.92 |  |
+| [17-drawstress](examples/17-drawstress) | Works | 111.79 | 91.85 | 64,000 cubes; three application encoders; main-thread CPU only. |
+| [18-ibl](examples/18-ibl) | Works | 1.27 | 7.39 |  |
+| [19-oit](examples/19-oit) | Works | 0.84 | 9.04 |  |
+| [20-nanovg](examples/20-nanovg) | Works | 13.83 | 2.59 |  |
+| [21-deferred](examples/21-deferred) | Works | 5.64 | 31.10 | Default raster path; graphics UAV mode requires uniform-block shaders. |
+| [22-windows](examples/22-windows) | Works | 0.93 | 0.56 | Default TV window measured; optional second-window workload is not included. |
+| [23-vectordisplay](examples/23-vectordisplay) | Works | 22.18 | 4.98 |  |
+| [24-nbody](examples/24-nbody) | Works | 1.53 | 83.25 | 16,384 particles; 64-lane LDS compatibility tiles preserve particle count. |
+| [25-c99](examples/25-c99) | Not hardware-verified | — | — | C99 API variant; not included in physical-console validation. |
+| [26-occlusion](examples/26-occlusion) | Works | 1.28 | 0.64 |  |
+| [27-terrain](examples/27-terrain) | Works | 0.73 | 1.74 |  |
+| [28-wireframe](examples/28-wireframe) | Works | 1.11 | 3.29 |  |
+| [29-debugdraw](examples/29-debugdraw) | Works | 3.12 | 4.39 |  |
+| [30-picking](examples/30-picking) | Works | 0.79 | 3.98 |  |
+| [31-rsm](examples/31-rsm) | Works | 10.86 | 161.80 |  |
+| [32-particles](examples/32-particles) | Works | 0.95 | 1.06 | Default emitter is idle (0 particles/s); this timing does not measure particle load. |
+| [33-pom](examples/33-pom) | Works | 0.82 | 2.68 |  |
+| [34-mvs](examples/34-mvs) | Works | 0.78 | 0.55 |  |
+| [35-dynamic](examples/35-dynamic) | Works | 16.34 | 0.56 |  |
+| [36-sky](examples/36-sky) | Works | 0.77 | 2.13 |  |
+| [37-gpudrivenrendering](examples/37-gpudrivenrendering) | **Unsupported** | — | — | Global atomic counters are unavailable; the compiler also cannot lower its 1,024-thread shared scan. |
+| [38-bloom](examples/38-bloom) | Works | 0.93 | 11.76 |  |
+| [39-assao](examples/39-assao) | Works, nonadaptive | 6.71 | 138.19 | High quality; all four nonadaptive qualities work. Adaptive needs global atomics. |
+| [40-svt](examples/40-svt) | Works | 1.40 | 2.45 | Stationary view after tile-cache warm-up; first-run SD cache generation is slow and is not timed. |
+| [41-tess](examples/41-tess) | **Unsupported** | — | — | Compute subdivision requires global atomic buffer allocation and read/write counters. |
+| [42-bunnylod](examples/42-bunnylod) | Works | 0.60 | 1.18 |  |
+| [43-denoise](examples/43-denoise) | Works | 1.95 | 115.02 |  |
+| [44-sss](examples/44-sss) | Works | 1.40 | 23.28 |  |
+| [45-bokeh](examples/45-bokeh) | Works | 1.43 | 63.97 |  |
+| [46-fsr](examples/46-fsr) | Works | 4.16 | 45.52 | Default settings; native MSAA is capped at 8x. |
+| [47-pixelformats](examples/47-pixelformats) | Works | 1.94 | 3.32 | Available native formats and bimg CPU fallbacks; integer previews are omitted upstream. |
+| [48-drawindirect](examples/48-drawindirect) | Works | 1.45 | 2.74 |  |
+| [49-hextile](examples/49-hextile) | Works | 0.68 | 5.56 |  |
+| [51-gpufont](examples/51-gpufont) | Works | 0.62 | 6.19 |  |
+| [52-layered](examples/52-layered) | Works | 0.71 | 3.20 |  |
+| [53-sky2](examples/53-sky2) | Works | 1.58 | 175.08 |  |
+| [54-s2h](examples/54-s2h) | Works | 0.61 | 29.72 | Default 3D mode measured; other source-defined modes, including Scatter, also work. |
+| [55-hdr10](examples/55-hdr10) | **Unsupported** | — | — | HDR10 presentation/signaling is unavailable; scanout is RGBA8 SDR. HDR rendering works in 09-hdr. |
+
+GX2 supports up to 8x MSAA; higher sample-count requests are clamped. The
+default direct-register build does not advertise graphics image/UAV access.
+For the supported UAV path in 21-deferred, build with
+`BGFX_GX2_UNIFORM_REGISTERS=OFF` and use matching `gx2-block` graphics shaders.
+Compute shaders use uniform blocks independently of that graphics setting.
 
 Who is using it? [#madewithbgfx](https://twitter.com/search?q=%23madewithbgfx&src=typed_query&f=live)
 -----------------------------------------------------------------------------------------------------
