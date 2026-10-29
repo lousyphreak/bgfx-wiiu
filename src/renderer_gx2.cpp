@@ -497,7 +497,17 @@ namespace bgfx { namespace gx2
 				uint32_t swaps, flips;
 				OSTime lastFlip, lastVsync;
 				GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
-				if (swaps - flips >= 2) { GX2_PROFILE_SCOPE(FlipWait); GX2WaitForFlip(); }
+				if (swaps - flips >= 2)
+				{
+					GX2_PROFILE_SCOPE(FlipWait);
+					// Wait for a queue slot, not for GX2WaitForFlip's queue-empty
+					// path when a flip races the pending-count check.
+					do
+					{
+						GX2WaitForVsync();
+						GX2GetSwapStatus(&swaps, &flips, &lastFlip, &lastVsync);
+					} while (swaps - flips >= 2);
+				}
 			}
 			else
 			{
