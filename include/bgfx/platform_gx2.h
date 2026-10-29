@@ -58,5 +58,18 @@ namespace bgfx
 	/// and releases foreground storage before returning. Resume clears suspension;
 	/// the next rendering frame recreates its presentation resources.
 	void gx2Suspend(bool _suspend);
+
+	/// Synchronous native UI work on the GX2 submission thread. Calls are made
+	/// from the API thread, outside encoders. Begin/Update require foreground;
+	/// End always runs the cleanup callback, even while suspended. The callback
+	/// must not call bgfx API-thread functions. Renderer state is restored after
+	/// each callback; no extra GX2 session or foreground heap is created.
+	enum class Gx2NativeUIOperation { Begin, Update, End };
+	bool gx2RunNativeUI(Gx2NativeUIOperation _operation, void (*_callback)(void*), void* _userdata);
+
+	/// Call only inside gx2RunNativeUI's callback. Draws distinct TV/DRC native
+	/// UI using temporary linear single-sample targets and existing scan buffers.
+	/// End frees the targets and restores the previous swap interval.
+	bool gx2DrawNativeUI(void (*_drawTV)(), void (*_drawDRC)());
 }
 #endif

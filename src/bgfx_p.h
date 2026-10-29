@@ -1213,6 +1213,9 @@ namespace bgfx
 			DestroyUniform,
 			ReadTexture,
 			ReadBuffer,
+#if BGFX_CONFIG_RENDERER_GX2
+			Gx2NativeUI,
+#endif
 		};
 
 		void resize(uint32_t _capacity = 0)

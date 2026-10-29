@@ -872,3 +872,31 @@ and Metal on iOS and macOS.
 	OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
 	OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 	OF THE POSSIBILITY OF SUCH DAMAGE.
+
+### SDL native text input on Wii U
+
+With `SDL_HINT_VIDEO_EXTERNAL_GRAPHICS=1`, include
+`<bgfx/platform_gx2_sdl.h>` and call `bgfx::gx2SetSDLTextInputWindow(window)`
+after bgfx initialization for each SDL text-input window. Keep the existing
+`bgfx::gx2Suspend(true/false)` foreground event handling. Before bgfx shutdown,
+stop text input and clear `SDL_PROP_WINDOW_WIIU_TEXT_INPUT_GRAPHICS_POINTER`.
+
+The bridge implements SDL's native keyboard graphics contract. Ordinary
+`SDL_StartTextInputWithProperties()` / `SDL_StopTextInput()` calls retain SDL's
+auto policy, properties and text events; no game-specific keyboard is needed.
+Native operations run synchronously on the existing GX2 render thread in both
+inline and internal-worker configurations. The main thread continues native
+lifecycle handling during the modal. Do not call text activation from an
+encoder or render-thread callback.
+
+The GX2 backend uses separate linear, single-sample modal targets for TV and
+DRC, retaining its session and scan buffers. Native display lists run with
+context shadowing disabled and uniform-block shader mode; bgfx context, cached
+state and presentation interval are restored afterward. Modal allocations are
+freed on keyboard shutdown or foreground suspension. Cleanup dispatch remains
+available while suspended, without issuing foreground graphics commands.
+
+The same facility is available without SDL through `gx2RunNativeUI()` and
+`gx2DrawNativeUI()` in `platform_gx2.h`; initialization and destruction must
+remain on the same submission thread. These functions synchronously flush API
+submission, so they are intended for native modal UI rather than normal draws.

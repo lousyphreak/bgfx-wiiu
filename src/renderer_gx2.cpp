@@ -517,6 +517,96 @@ namespace bgfx { namespace gx2
 			m_presentCursor = (m_presentCursor+1)%kQueuedFrames;
 		}
 
+		void freeNativeUI()
+		{
+			if (m_nativeUIContext) MEMFreeToDefaultHeap(m_nativeUIContext);
+			m_nativeUIContext = NULL;
+			for (GX2ColorBuffer& color : m_nativeUIColors)
+			{
+				if (color.surface.image) MEMFreeToDefaultHeap(color.surface.image);
+				color = {};
+			}
+		}
+
+		bool runNativeUI(Gx2NativeUIOperation _operation, void (*_callback)(void*), void* _userdata)
+		{
+			if (m_suspended && _operation != Gx2NativeUIOperation::End) return false;
+			if (!m_suspended)
+			{
+				// Finish normal rendering before borrowing the session. FLUSH keeps
+				// the outer renderFrame from overwriting native UI presentation.
+				if (_operation == Gx2NativeUIOperation::Begin) { preparePresent(); flip(); }
+				else
+				{
+					m_mainWindow.used = false;
+					for (FrameBuffer& fb : m_frameBuffers) fb.window.used = false;
+				}
+				GX2DrawDone();
+				if (_operation == Gx2NativeUIOperation::Begin)
+				{
+					m_nativeUIContext = (GX2ContextState*)MEMAllocFromDefaultHeapEx(sizeof(GX2ContextState), GX2_CONTEXT_STATE_ALIGNMENT);
+					if (!m_nativeUIContext) return false;
+					GX2SetupContextStateEx(m_nativeUIContext, TRUE);
+				}
+				GX2SetContextState(m_nativeUIContext ? m_nativeUIContext : m_context);
+				GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+				if (_operation == Gx2NativeUIOperation::Begin)
+				{
+					m_nativeUISwapInterval = GX2GetSwapInterval();
+					GX2SetSwapInterval(1);
+				}
+			}
+			_callback(_userdata);
+			if (!m_suspended)
+			{
+				GX2DrawDone();
+				restore();
+				if (_operation == Gx2NativeUIOperation::End) GX2SetSwapInterval(m_nativeUISwapInterval);
+			}
+			if (_operation == Gx2NativeUIOperation::End) freeNativeUI();
+			return true;
+		}
+
+		bool drawNativeUI(void (*_drawTV)(), void (*_drawDRC)())
+		{
+			if (GX2GetSwapInterval() != 1) GX2SetSwapInterval(1);
+			GX2WaitForFlip();
+			for (uint32_t ii = 0; ii < 2; ++ii)
+			{
+				GX2ColorBuffer& color = m_nativeUIColors[ii];
+				if (!color.surface.image)
+				{
+					GX2Surface& surface = color.surface;
+					surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+					surface.width = ii ? 854 : m_native.tvWidth;
+					surface.height = ii ? 480 : m_native.tvHeight;
+					surface.depth = surface.mipLevels = 1;
+					surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+					surface.use = GX2_SURFACE_USE_TEXTURE_COLOR_BUFFER_TV;
+					surface.aa = GX2_AA_MODE1X;
+					surface.tileMode = GX2_TILE_MODE_DEFAULT;
+					GX2CalcSurfaceSizeAndAlignment(&surface);
+					surface.image = MEMAllocFromDefaultHeapEx(surface.imageSize, surface.alignment);
+					if (!surface.image) return false;
+					DCZeroRange(surface.image, surface.imageSize);
+					GX2Invalidate(GX2_INVALIDATE_MODE_CPU, surface.image, surface.imageSize);
+					color.viewNumSlices = 1; GX2InitColorBufferRegs(&color);
+				}
+				// Native display lists must not modify bgfx's context shadow.
+				GX2SetContextState(m_nativeUIContext);
+				GX2SetColorBuffer(&color, GX2_RENDER_TARGET_0);
+				GX2SetViewport(0, 0, float(color.surface.width), float(color.surface.height), 0, 1);
+				GX2SetScissor(0, 0, color.surface.width, color.surface.height);
+				GX2SetContextState(NULL);
+				(ii ? _drawDRC : _drawTV)();
+				GX2SetContextState(m_nativeUIContext);
+				GX2CopyColorBufferToScanBuffer(&color, ii ? GX2_SCAN_TARGET_DRC : GX2_SCAN_TARGET_TV);
+			}
+			GX2SwapScanBuffers(); GX2Flush();
+			GX2SetTVEnable(TRUE); GX2SetDRCEnable(TRUE);
+			return true;
+		}
+
 		uint32_t acquire(SubmissionRing& _ring, uint32_t _size)
 		{
 			GX2_PROFILE_SCOPE_SELECT(&_ring == &m_lists ? Gx2Profiler::ListAcquire : Gx2Profiler::UniformAcquire);
@@ -3616,6 +3706,7 @@ namespace bgfx { namespace gx2
 		void suspend()
 		{
 			m_native.drain(); seal();
+			freeNativeUI();
 			discardWindow(m_mainWindow);
 			for (FrameBuffer& fb : m_frameBuffers) discardWindow(fb.window);
 			// Retired MEM1 images also belong to the foreground heap being returned.
@@ -4951,6 +5042,9 @@ namespace bgfx { namespace gx2
 		OSTime m_presentStamps[kQueuedFrames] = {};
 		uint32_t m_presentCursor = 0;
 		NativeGraphics m_native;
+		GX2ContextState* m_nativeUIContext = NULL;
+		GX2ColorBuffer m_nativeUIColors[2] = {};
+		uint32_t m_nativeUISwapInterval = 1;
 		bool m_suspended = false;
 		GX2ContextState* m_context = NULL;
 		Buffer m_indexBuffers[BGFX_CONFIG_MAX_INDEX_BUFFERS];
@@ -5008,6 +5102,15 @@ namespace bgfx { namespace gx2
 	};
 
 	static RendererContextGX2* s_renderGX2;
+	bool runNativeUI(Gx2NativeUIOperation _operation, void (*_callback)(void*), void* _userdata)
+	{
+		return s_renderGX2->runNativeUI(_operation, _callback, _userdata);
+	}
+	bool drawNativeUI(void (*_drawTV)(), void (*_drawDRC)())
+	{
+		return s_renderGX2->drawNativeUI(_drawTV, _drawDRC);
+	}
+
 	RendererContextI* rendererCreate(const Init& _init)
 	{
 		if (NULL == _init.swapChain.nwh && (0 != _init.swapChain.width || 0 != _init.swapChain.height)) return NULL;

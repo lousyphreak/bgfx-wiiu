@@ -13,6 +13,7 @@
 #if BX_PLATFORM_WIIU
 #include <SDL3/SDL_wiiu.h>
 #include <bgfx/platform_gx2.h>
+#include <bgfx/platform_gx2_sdl.h>
 #endif
 #include "entry_sdl3.h"
 #include <unistd.h>
@@ -377,6 +378,7 @@ namespace entry
 		if (NULL == win.window) return { UINT16_MAX };
 
 #if BX_PLATFORM_WIIU
+		bgfx::gx2SetSDLTextInputWindow(win.window);
 		win.generation = -1;
 #endif
 		win.mouseX = win.mouseY = win.mouseZ = 0;

@@ -3553,6 +3553,31 @@ namespace bgfx
 #endif // BX_PLATFORM_OSX || BX_PLATFORM_IOS || BX_PLATFORM_VISIONOS
 
 #if BX_PLATFORM_WIIU
+	namespace gx2
+	{
+		bool runNativeUI(Gx2NativeUIOperation _operation, void (*_callback)(void*), void* _userdata);
+		bool drawNativeUI(void (*_drawTV)(), void (*_drawDRC)());
+	}
+
+	bool gx2RunNativeUI(Gx2NativeUIOperation _operation, void (*_callback)(void*), void* _userdata)
+	{
+		if (NULL == s_ctx || RendererType::Gx2 != getRendererType()) return false;
+		BGFX_CHECK_API_THREAD();
+		bool result = false;
+		CommandBuffer& command = s_ctx->getCommandBuffer(CommandBuffer::Gx2NativeUI);
+		command.write(_operation); command.write(_callback); command.write(_userdata);
+		command.write(&result);
+		frame(BGFX_FRAME_FLUSH);
+		s_ctx->renderSemWait(); s_ctx->renderSemPost();
+		return result;
+	}
+
+	bool gx2DrawNativeUI(void (*_drawTV)(), void (*_drawDRC)())
+	{
+		BGFX_CHECK_RENDER_THREAD();
+		return gx2::drawNativeUI(_drawTV, _drawDRC);
+	}
+
 	void gx2Suspend(bool _suspend)
 	{
 		if (NULL == s_ctx || !!(s_ctx->m_init.reset & BGFX_RESET_SUSPEND) == _suspend) return;
@@ -4114,6 +4139,20 @@ namespace bgfx
 			case CommandBuffer::End:
 				end = true;
 				break;
+
+#if BGFX_CONFIG_RENDERER_GX2
+			case CommandBuffer::Gx2NativeUI:
+				{
+					Gx2NativeUIOperation operation;
+					void (*callback)(void*);
+					void* userdata;
+					bool* result;
+					_cmdbuf.read(operation); _cmdbuf.read(callback);
+					_cmdbuf.read(userdata); _cmdbuf.read(result);
+					*result = gx2::runNativeUI(operation, callback, userdata);
+				}
+				break;
+#endif
 
 			case CommandBuffer::CreateIndexBuffer:
 				{
