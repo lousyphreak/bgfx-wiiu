@@ -4814,6 +4814,8 @@ namespace bgfx { namespace gx2
 				if (scissor.isZero()) continue;
 				std::vector<Block*> indirect;
 				const bool indexed = isValid(draw.m_indexBuffer);
+				// Logical dynamic/transient buffers can share an allocation across widths.
+				const uint32_t indexSize = indexed ? (draw.isIndex16() ? 2 : 4) : 0;
 				const uint32_t indirectNum = isValid(draw.m_indirectBuffer) ? indirectRecords(draw.m_indirectBuffer, draw.m_startIndirect, draw.m_numIndirect) : 0;
 				const uint32_t indirectStride = indexed ? 96 : 80;
 				const uint32_t topology = (draw.m_stateFlags & BGFX_STATE_PT_MASK) >> BGFX_STATE_PT_SHIFT;
@@ -4832,10 +4834,9 @@ namespace bgfx { namespace gx2
 						if (indexed)
 						{
 							Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
-							const uint32_t size = buffer.flags & BGFX_BUFFER_INDEX32 ? 4 : 2;
 							params[1][0] = OSEffectiveToPhysical(uint32_t(uintptr_t(buffer.block->data)));
-							params[1][1] = size;
-							params[1][3] = size == 4 ? (buffer.littleEndian ? GX2_INDEX_TYPE_U32_LE : GX2_INDEX_TYPE_U32)
+							params[1][1] = indexSize;
+							params[1][3] = indexSize == 4 ? (buffer.littleEndian ? GX2_INDEX_TYPE_U32_LE : GX2_INDEX_TYPE_U32)
 								: (buffer.littleEndian ? GX2_INDEX_TYPE_U16_LE : GX2_INDEX_TYPE_U16);
 							touch(buffer.block);
 						}
@@ -4897,7 +4898,7 @@ namespace bgfx { namespace gx2
 				textures(_render->m_renderBind[draw.m_bindIdx], _render->m_colorPalette);
 
 				GX2_PROFILE_ADD(VisibleDraws, 1);
-				primitiveRestart(primitive, indexed ? (m_indexBuffers[draw.m_indexBuffer.idx].flags & BGFX_BUFFER_INDEX32 ? 4 : 2) : 0);
+				primitiveRestart(primitive, indexSize);
 				vertexInput(program, draw);
 				uint32_t count = 0;
 				Block* occlusion = hasOcclusionQuery ? beginOcclusion(draw.m_occlusionQuery) : NULL;
@@ -4923,7 +4924,6 @@ namespace bgfx { namespace gx2
 				else if (indexed)
 				{
 					Buffer& buffer = m_indexBuffers[draw.m_indexBuffer.idx];
-					const uint32_t indexSize = buffer.flags & BGFX_BUFFER_INDEX32 ? 4 : 2;
 					count = draw.m_numIndices == UINT32_MAX ? buffer.size/indexSize-draw.m_startIndex : draw.m_numIndices;
 					{
 						GX2_PROFILE_SCOPE(DirectDraw);
