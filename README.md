@@ -93,6 +93,28 @@ Languages:
  * [Swift language API bindings](https://github.com/stuartcarnie/SwiftBGFX)
  * [Zig language API bindings](https://github.com/bkaradzic/bgfx/tree/master/bindings/zig)
 
+## Wii U shader compiler
+
+Install the host `cafeglsl-host` package from the local pacman repository. It
+provides `glslcompiler`, the static library, public headers and CMake/pkg-config
+metadata under `/opt/devkitpro/tools`. The host shaderc build discovers this
+installation automatically, or uses `${DEVKITPRO}/tools` for a custom SDK prefix.
+An explicit `cafeglsl_DIR` or `CMAKE_PREFIX_PATH` can select another installation.
+
+From this repository, with `bx-wiiu` and `bimg-wiiu` as sibling directories:
+
+```sh
+cmake -S scripts/shaderc-wiiu -B .build/shaderc -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build .build/shaderc --parallel 24
+```
+
+This links the installed `cafeglsl::cafeglsl` target and its static dependencies;
+the build does not compile CafeGLSL from source. The normal Genie shaderc build
+also discovers the installed package when available; `CAFEGLSL_PREFIX` overrides
+its location. With the normal devkitPro tool
+directory on `PATH`, `glslcompiler` is also available as a standalone GLSL-to-GX2
+compiler.
+
 ## Wii U examples
 
 The native GX2 backend uses WUT and the SDL3 example entry. **Works** means the

@@ -4,7 +4,8 @@ project(shaderc_wiiu_host LANGUAGES CXX)
 get_filename_component(BGFX_DIR "../.." ABSOLUTE)
 set(BX_DIR "${BGFX_DIR}/../bx-wiiu" CACHE PATH "bx source directory")
 set(BIMG_DIR "${BGFX_DIR}/../bimg-wiiu" CACHE PATH "bimg source directory")
-find_package(cafeglsl CONFIG REQUIRED)
+find_package(cafeglsl CONFIG REQUIRED
+    HINTS "$ENV{DEVKITPRO}/tools" /opt/devkitpro/tools)
 
 add_library(bx_host STATIC ${BX_DIR}/src/amalgamated.cpp)
 target_compile_features(bx_host PUBLIC cxx_std_20)

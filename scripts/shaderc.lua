@@ -440,6 +440,12 @@ project "shaderc"
 	-- Optional native GX2 compiler in a normal multi-backend shaderc build.
 	-- The compact Wii U-only host build lives in scripts/shaderc-wiiu/.
 	local cafeglsl = os.getenv("CAFEGLSL_PREFIX")
+	if not cafeglsl then
+		local installed = path.join(os.getenv("DEVKITPRO") or "/opt/devkitpro", "tools")
+		if os.isfile(path.join(installed, "lib/pkgconfig/cafeglsl.pc")) then
+			cafeglsl = installed
+		end
+	end
 	if cafeglsl then
 		defines { "SHADERC_CONFIG_HAS_CAFEGLSL=1" }
 		includedirs { path.join(cafeglsl, "include") }
